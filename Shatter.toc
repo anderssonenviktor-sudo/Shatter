@@ -1,0 +1,19 @@
+## Interface: 120000, 120001
+## Title: Shatter
+## Notes: Standalone stack-tracking bar
+## Author: Citrongroda-TwistingNether
+## Version: 1.0.0
+## SavedVariables: ShatterDB
+## OptionalDeps: LibSharedMedia-3.0
+## IconTexture: Interface\Icons\Spell_Arcane_Arcane04
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
+Libs\AceSerializer-3.0\AceSerializer-3.0.lua
+Libs\LibDeflate\LibDeflate.lua
+
+Core.lua
+Profiles.lua
+Shatter.lua
+Config.lua
