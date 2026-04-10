@@ -280,7 +280,7 @@ function ns:StartTicker()
         return
     end
     if self.tickerHandle then return end
-    self.tickerHandle = C_Timer.NewTicker(0.1, function() self:PollAura() end)
+    self.tickerHandle = C_Timer.NewTicker(0.05, function() self:PollAura() end)
 end
 
 function ns:StopTicker()
