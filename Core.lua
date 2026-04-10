@@ -39,6 +39,7 @@ local DEFAULTS = {
     TextYOffset = 0,
     HideWhenInactive = false,
     AnchorToECV = false,
+    HighPerformance = false,
 }
 
 

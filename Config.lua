@@ -413,6 +413,20 @@ local function BuildTrackingSection(parent, db, yOff)
     lockBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     yOff = yOff - 35
 
+    local highPerf = CreateCheckbox(parent, "High Performance", db.HighPerformance, function(v)
+        db.HighPerformance = v
+        ns:ApplySettings()
+    end)
+    highPerf:SetPoint("TOPLEFT", 20, yOff)
+    highPerf:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("High Performance Mode", 1, 1, 1)
+        GameTooltip:AddLine("Updates the bar every frame using CDM aura refresh events instead of polling every 0.1s. More responsive but uses more CPU.", 1, 0.82, 0, true)
+        GameTooltip:Show()
+    end)
+    highPerf:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    yOff = yOff - 30
+
     return yOff
 end
 

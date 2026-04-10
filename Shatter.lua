@@ -107,6 +107,7 @@ ns.tickerHandle = nil
 ns.previewActive = false
 ns.previewTimer = nil
 ns.enabled = false
+ns.onUpdateActive = false
 
 
 -- Event Dispatch
@@ -273,6 +274,11 @@ end
 -- Ticker / Polling
 
 function ns:StartTicker()
+    local db = self.db or {}
+    if db.HighPerformance then
+        self:StartOnUpdate()
+        return
+    end
     if self.tickerHandle then return end
     self.tickerHandle = C_Timer.NewTicker(0.1, function() self:PollAura() end)
 end
@@ -282,6 +288,19 @@ function ns:StopTicker()
         self.tickerHandle:Cancel()
         self.tickerHandle = nil
     end
+    self:StopOnUpdate()
+end
+
+function ns:StartOnUpdate()
+    if self.onUpdateActive then return end
+    self.onUpdateActive = true
+    eventFrame:SetScript("OnUpdate", function() ns:PollAura() end)
+end
+
+function ns:StopOnUpdate()
+    if not self.onUpdateActive then return end
+    self.onUpdateActive = false
+    eventFrame:SetScript("OnUpdate", nil)
 end
 
 function ns:PollAura()
@@ -873,6 +892,11 @@ function ns:ApplySettings()
         if not self.enabled then
             self:Enable()
         else
+            -- Restart ticker to pick up HighPerformance changes
+            self:StopTicker()
+            if HasAuraInstanceID(self.trackedInstanceID) or UnitExists(db.TrackUnit or "target") then
+                self:StartTicker()
+            end
             self.cachedCDMFrame = self:FindCDMFrame()
             self:CreateFrame()
             self:ApplyVisualSettings()
