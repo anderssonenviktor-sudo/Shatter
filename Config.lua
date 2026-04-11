@@ -508,9 +508,15 @@ local function BuildGCDBarSection(parent, db, yOff)
         GameTooltip:Show()
     end)
     gapBox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local reverseFill = CreateCheckbox(parent, "Reverse Fill", db.GCDBarReverseFill, function(v)
+        db.GCDBarReverseFill = v
+        ns:Refresh()
+    end)
+    reverseFill:SetPoint("TOPLEFT", 340, yOff - 14)
     yOff = yOff - 32
 
-    local gcdColor = CreateColorSwatch(parent, "Range Bar Color", db.GCDBarColor, function(c)
+    local gcdColor = CreateColorSwatch(parent, "Projectile Bar Color", db.GCDBarColor, function(c)
         db.GCDBarColor = c
         ns:Refresh()
     end)
@@ -591,7 +597,7 @@ local function BuildThresholdsAndTicksSection(parent, db, yOff)
 
     RebuildThresholds()
 
-    local tickHeader = CreateSectionHeader(parent, "Tick Marks")
+    local tickHeader = CreateSectionHeader(parent, "Ticks")
     tickHeader:SetPoint("TOPLEFT", 300, yOff)
 
     local customTickBox = CreateEditBox(parent, "Tick Values (e.g. 5, 10, 15)", db.CustomTickValues or "", function(v)
@@ -654,7 +660,7 @@ local function BuildTexturesAndFontsSection(parent, db, addBtn)
 end
 
 local function BuildTextSection(parent, db, textureDropdown)
-    local textHeader = CreateSectionHeader(parent, "Text Fine-Tuning")
+    local textHeader = CreateSectionHeader(parent, "Text settings")
     textHeader:SetPoint("TOPLEFT", textureDropdown, "BOTTOMLEFT", 0, -20)
 
     local fontSizeBox = CreateEditBox(parent, "Font Size", tostring(db.FontSize or 20), function(v)

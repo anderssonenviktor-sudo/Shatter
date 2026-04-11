@@ -953,22 +953,23 @@ function ns:UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
         end
     end
 
+    local reverse = self.db.GCDBarReverseFill
     self.gcdStart = GetTime()
     self.gcdDuration = duration
     self.gcdBar:SetMinMaxValues(0, duration)
-    self.gcdBar:SetValue(duration)
+    self.gcdBar:SetValue(reverse and 0 or duration)
     self.gcdBar:SetAlpha(1)
     self.gcdBar:Show()
     self.gcdBar:SetScript("OnUpdate", function(bar)
         local remaining = (ns.gcdStart + ns.gcdDuration) - GetTime()
         if remaining <= 0 then
-            bar:SetValue(0)
+            bar:SetValue(reverse and ns.gcdDuration or 0)
             bar:SetAlpha(1)
             bar:Hide()
             bar:SetScript("OnUpdate", nil)
             return
         end
-        bar:SetValue(remaining)
+        bar:SetValue(reverse and (ns.gcdDuration - remaining) or remaining)
     end)
 end
 

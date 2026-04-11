@@ -46,6 +46,7 @@ local DEFAULTS = {
     GCDBarHeight = 6,
     GCDBarGap = 2, -- positive = above Shatter bar, negative = below
     GCDBarColor = { 1, 1, 1, 0.9 },
+    GCDBarReverseFill = false,
 }
 
 
