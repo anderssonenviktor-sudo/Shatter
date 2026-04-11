@@ -108,6 +108,9 @@ ns.previewActive = false
 ns.previewTimer = nil
 ns.enabled = false
 ns.onUpdateActive = false
+ns.gcdBar = nil
+ns.gcdStart = 0
+ns.gcdDuration = 0
 
 
 -- Event Dispatch
@@ -115,8 +118,12 @@ ns.onUpdateActive = false
 local eventFrame = CreateFrame("Frame")
 local eventHandlers = {}
 
-local function RegisterEvent(event)
-    eventFrame:RegisterEvent(event)
+local function RegisterEvent(event, unit1, unit2)
+    if unit1 then
+        eventFrame:RegisterUnitEvent(event, unit1, unit2)
+    else
+        eventFrame:RegisterEvent(event)
+    end
 end
 
 local function UnregisterAllEvents()
@@ -451,12 +458,60 @@ function ns:CreateFrame()
     self:ApplyTextShadow()
 
     self:RebuildGranularBars()
+    self:CreateGCDBar()
 
     local hideOnCreate = db.HideWhenInactive
     if hideOnCreate then
         self.frame:Hide()
     else
         self.frame:Show()
+    end
+end
+
+function ns:CreateGCDBar()
+    if self.gcdBar then return end
+    if not self.frame then return end
+    local db = self.db or {}
+
+    local bar = CreateFrame("StatusBar", "ShatterGCDBar", self.frame)
+    bar:SetFrameStrata("MEDIUM")
+    bar:SetStatusBarTexture(self:GetBarTexturePath())
+    bar:SetStatusBarColor(ns.UnpackColor(db.GCDBarColor or { 1, 1, 1, 1 }))
+    bar:SetMinMaxValues(0, 1)
+    bar:SetValue(0)
+    bar:Hide()
+
+    bar.bg = bar:CreateTexture(nil, "BACKGROUND")
+    bar.bg:SetAllPoints()
+    bar.bg:SetColorTexture(0, 0, 0, 0)
+
+    self.gcdBar = bar
+    self:ApplyGCDBarVisuals()
+end
+
+function ns:ApplyGCDBarVisuals()
+    if not self.gcdBar or not self.frame then return end
+    local db = self.db or {}
+    local height = db.GCDBarHeight or 6
+    local gap = db.GCDBarGap or 2
+
+    self.gcdBar:ClearAllPoints()
+    if gap >= 0 then
+        -- Positive gap = above Shatter bar
+        self.gcdBar:SetPoint("BOTTOMLEFT", self.frame, "TOPLEFT", 0, gap)
+        self.gcdBar:SetPoint("BOTTOMRIGHT", self.frame, "TOPRIGHT", 0, gap)
+    else
+        -- Negative gap = below Shatter bar
+        self.gcdBar:SetPoint("TOPLEFT", self.frame, "BOTTOMLEFT", 0, gap)
+        self.gcdBar:SetPoint("TOPRIGHT", self.frame, "BOTTOMRIGHT", 0, gap)
+    end
+    self.gcdBar:SetHeight(PixelSnap(height))
+    self.gcdBar:SetStatusBarTexture(self:GetBarTexturePath())
+    self.gcdBar:SetStatusBarColor(ns.UnpackColor(db.GCDBarColor or { 1, 1, 1, 0.9 }))
+
+    if not db.GCDBarEnabled then
+        self.gcdBar:SetScript("OnUpdate", nil)
+        self.gcdBar:Hide()
     end
 end
 
@@ -730,6 +785,8 @@ function ns:ApplyVisualSettings()
     self:ApplyTextPosition()
     self:ApplyTextShadow()
 
+    self:ApplyGCDBarVisuals()
+
     C_Timer.After(0, function()
         if not self.frame then return end
         self:RebuildGranularBars()
@@ -756,11 +813,13 @@ function ns:Enable()
     eventHandlers["PLAYER_TARGET_CHANGED"] = function(...) ns:PLAYER_TARGET_CHANGED(...) end
     eventHandlers["PLAYER_ENTERING_WORLD"] = function(...) ns:PLAYER_ENTERING_WORLD(...) end
     eventHandlers["PLAYER_SPECIALIZATION_CHANGED"] = function(...) ns:PLAYER_SPECIALIZATION_CHANGED(...) end
+    eventHandlers["UNIT_SPELLCAST_SUCCEEDED"] = function(...) ns:UNIT_SPELLCAST_SUCCEEDED(...) end
 
     RegisterEvent("UNIT_AURA")
     RegisterEvent("PLAYER_TARGET_CHANGED")
     RegisterEvent("PLAYER_ENTERING_WORLD")
     RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+    RegisterEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 
     self:FullScanForTrackedAura()
     self:UpdateBar()
@@ -771,6 +830,10 @@ function ns:Disable()
     self:StopTicker()
     self:ClearTrackedState()
     UnregisterAllEvents()
+    if self.gcdBar then
+        self.gcdBar:SetScript("OnUpdate", nil)
+        self.gcdBar:Hide()
+    end
     if self.frame then self.frame:Hide() end
 end
 
@@ -865,6 +928,47 @@ function ns:PLAYER_ENTERING_WORLD()
             self:FullScanForTrackedAura()
             self:UpdateBar()
         end
+    end)
+end
+
+function ns:UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
+    if unit ~= "player" then return end
+    if spellID ~= ns.ICE_LANCE_SPELL_ID then return end
+    if not (self.db and self.db.GCDBarEnabled) then return end
+    if not self.gcdBar then return end
+
+    -- Models Ice Lance missile travel: launch delay + yards / projectile speed.
+    -- Tuned so the bar ends when the missile lands (stacks consume).
+    local LAUNCH_DELAY = 0.1
+    local PROJECTILE_SPEED = 44
+    local duration = LAUNCH_DELAY + 40 / PROJECTILE_SPEED
+    local rc = LibStub and LibStub("LibRangeCheck-3.0", true)
+    if rc and UnitExists("target") then
+        local minR, maxR = rc:GetRange("target")
+        local yards = maxR or minR
+        if yards then
+            if yards > 40 then yards = 40 end
+            if yards < 0 then yards = 0 end
+            duration = LAUNCH_DELAY + yards / PROJECTILE_SPEED
+        end
+    end
+
+    self.gcdStart = GetTime()
+    self.gcdDuration = duration
+    self.gcdBar:SetMinMaxValues(0, duration)
+    self.gcdBar:SetValue(duration)
+    self.gcdBar:SetAlpha(1)
+    self.gcdBar:Show()
+    self.gcdBar:SetScript("OnUpdate", function(bar)
+        local remaining = (ns.gcdStart + ns.gcdDuration) - GetTime()
+        if remaining <= 0 then
+            bar:SetValue(0)
+            bar:SetAlpha(1)
+            bar:Hide()
+            bar:SetScript("OnUpdate", nil)
+            return
+        end
+        bar:SetValue(remaining)
     end)
 end
 

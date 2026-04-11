@@ -12,6 +12,7 @@ Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
 Libs\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
 Libs\AceSerializer-3.0\AceSerializer-3.0.lua
 Libs\LibDeflate\LibDeflate.lua
+Libs\LibRangeCheck-3.0\LibRangeCheck-3.0.lua
 
 Core.lua
 Profiles.lua

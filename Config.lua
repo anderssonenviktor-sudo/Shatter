@@ -466,6 +466,60 @@ local function BuildColorsSection(parent, db, yOff)
     return yOff
 end
 
+local function BuildGCDBarSection(parent, db, yOff)
+    local header = CreateSectionHeader(parent, "Track Ice lance projectile")
+    header:SetPoint("TOPLEFT", 20, yOff)
+    yOff = yOff - 28
+
+    local enable = CreateCheckbox(parent, "Projectile Bar", db.GCDBarEnabled, function(v)
+        db.GCDBarEnabled = v
+        ns:Refresh()
+    end)
+    enable:SetPoint("TOPLEFT", 20, yOff)
+    enable:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Range Bar", 1, 1, 1)
+        GameTooltip:AddLine("On Ice Lance cast, runs a status bar whose duration scales with target range: 40y = 1.5s, 0y = 0.2s (linear).", 1, 0.82, 0, true)
+        GameTooltip:Show()
+    end)
+    enable:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local heightBox = CreateEditBox(parent, "Height", tostring(db.GCDBarHeight or 6), function(v)
+        local n = tonumber(v)
+        if n and n >= 1 and n <= 50 then
+            db.GCDBarHeight = math.floor(n)
+            ns:Refresh()
+        end
+    end, 56)
+    heightBox:SetPoint("TOPLEFT", 180, yOff)
+
+    local gapBox = CreateEditBox(parent, "Gap", tostring(db.GCDBarGap or 2), function(v)
+        local n = tonumber(v)
+        if n and n >= -50 and n <= 50 then
+            db.GCDBarGap = math.floor(n)
+            ns:Refresh()
+        end
+    end, 56)
+    gapBox:SetPoint("TOPLEFT", 260, yOff)
+    gapBox:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Gap", 1, 1, 1)
+        GameTooltip:AddLine("Positive = above the Shatter bar, negative = below.", 1, 0.82, 0, true)
+        GameTooltip:Show()
+    end)
+    gapBox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    yOff = yOff - 32
+
+    local gcdColor = CreateColorSwatch(parent, "Range Bar Color", db.GCDBarColor, function(c)
+        db.GCDBarColor = c
+        ns:Refresh()
+    end)
+    gcdColor:SetPoint("TOPLEFT", 20, yOff)
+    yOff = yOff - 35
+
+    return yOff
+end
+
 local function BuildThresholdsAndTicksSection(parent, db, yOff)
     local thresholdHeader = CreateSectionHeader(parent, "Color Thresholds")
     thresholdHeader:SetPoint("TOPLEFT", 20, yOff)
@@ -767,6 +821,7 @@ local function BuildConfigContent(parent)
     yOff = BuildBarSizeSection(parent, db, yOff)
     yOff = BuildTrackingSection(parent, db, yOff)
     yOff = BuildColorsSection(parent, db, yOff)
+    yOff = BuildGCDBarSection(parent, db, yOff)
     local addBtn
     yOff, addBtn = BuildThresholdsAndTicksSection(parent, db, yOff)
 
