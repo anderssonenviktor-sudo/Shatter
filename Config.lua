@@ -665,7 +665,7 @@ local function BuildTextSection(parent, db, textureDropdown)
 
     local fontSizeBox = CreateEditBox(parent, "Font Size", tostring(db.FontSize or 20), function(v)
         local n = tonumber(v)
-        if n and n >= 6 and n <= 72 then
+        if n and n >= 0 and n <= 60 then
             db.FontSize = math.floor(n)
             ns:Refresh()
         end

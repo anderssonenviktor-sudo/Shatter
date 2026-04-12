@@ -450,9 +450,16 @@ function ns:CreateFrame()
     self.textFrame:SetAllPoints(self.frame)
     self.textFrame:SetFrameLevel(self.ticksContainer:GetFrameLevel() + 2)
     self.stackText = self.textFrame:CreateFontString(nil, "OVERLAY")
-    self.stackText:SetFont(fontPath, db.FontSize or 20, outlineFlag)
-    local textColor = db.TextColor or { 1, 1, 1, 1 }
-    self.stackText:SetTextColor(ns.UnpackColor(textColor))
+    local fontSize = db.FontSize or 20
+    if fontSize > 0 then
+        self.stackText:SetFont(fontPath, fontSize, outlineFlag)
+        local textColor = db.TextColor or { 1, 1, 1, 1 }
+        self.stackText:SetTextColor(ns.UnpackColor(textColor))
+        self.stackText:Show()
+    else
+        self.stackText:SetFont(fontPath, 1, outlineFlag)
+        self.stackText:Hide()
+    end
     self.stackText:SetText("")
     self:ApplyTextPosition()
     self:ApplyTextShadow()
@@ -779,9 +786,16 @@ function ns:ApplyVisualSettings()
 
     local fontPath = ns:GetFont(db.FontFace)
     local outlineFlag = (db.TextOutline == "NONE") and "" or (db.TextOutline or "OUTLINE")
-    self.stackText:SetFont(fontPath, db.FontSize or 20, outlineFlag)
-    local textColor = db.TextColor or { 1, 1, 1, 1 }
-    self.stackText:SetTextColor(ns.UnpackColor(textColor))
+    local fontSize = db.FontSize or 20
+    if fontSize > 0 then
+        self.stackText:SetFont(fontPath, fontSize, outlineFlag)
+        local textColor = db.TextColor or { 1, 1, 1, 1 }
+        self.stackText:SetTextColor(ns.UnpackColor(textColor))
+        self.stackText:Show()
+    else
+        self.stackText:SetFont(fontPath, 1, outlineFlag)
+        self.stackText:Hide()
+    end
     self:ApplyTextPosition()
     self:ApplyTextShadow()
 
@@ -940,7 +954,7 @@ function ns:UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
     -- Models Ice Lance missile travel: launch delay + yards / projectile speed.
     -- Tuned so the bar ends when the missile lands (stacks consume).
     local LAUNCH_DELAY = 0.1
-    local PROJECTILE_SPEED = 44
+    local PROJECTILE_SPEED = 50
     local duration = LAUNCH_DELAY + 40 / PROJECTILE_SPEED
     local rc = LibStub and LibStub("LibRangeCheck-3.0", true)
     if rc and UnitExists("target") then
