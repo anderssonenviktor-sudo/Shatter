@@ -355,6 +355,18 @@ local function BuildBarSizeSection(parent, db, yOff)
         GameTooltip:Show()
     end)
     anchorECV:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local hideInactive = CreateCheckbox(parent, "Hide When Inactive", db.HideWhenInactive, function(v)
+        db.HideWhenInactive = v; ns:Refresh()
+    end)
+    hideInactive:SetPoint("LEFT", anchorECV, "RIGHT", 80, 0)
+    hideInactive:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Hide When Inactive", 1, 1, 1)
+        GameTooltip:AddLine("Hide the bar out of combat when Shatter is not on the tracked target. Always shown while in combat.", 1, 0.82, 0, true)
+        GameTooltip:Show()
+    end)
+    hideInactive:SetScript("OnLeave", function() GameTooltip:Hide() end)
     yOff = yOff - 50
 
     return yOff

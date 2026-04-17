@@ -6,10 +6,8 @@ ns.ADDON_NAME = "Shatter"
 ns.ADDON_COLOR = "|cFFFFE000"
 ns.VERSION = "1.0.0"
 ns.DEFAULT_FONT = "Fonts\\FRIZQT__.TTF"
-ns.DEBUFF_SPELL_ID = 1221389
 ns.CDM_SPELL_ID = 1246769
 ns.ICE_LANCE_SPELL_ID = 30455
-ns.GCD_SPELL_ID = 61304
 
 local DEFAULTS = {
     Enabled = true,
@@ -21,7 +19,7 @@ local DEFAULTS = {
     BarScale = 1.0,
     PosX = 0,
     PosY = 0,
-    BarTexture = "Blizzard",
+    BarTexture = "Solid",
     BarColor = { 0.2, 0.4, 1, 1 },
     BackgroundColor = { 0.1, 0.1, 0.1, 0.8 },
     ColorThresholds = {},
@@ -44,7 +42,7 @@ local DEFAULTS = {
     HighPerformance = false,
     GCDBarEnabled = false,
     GCDBarHeight = 6,
-    GCDBarGap = 2, -- positive = above Shatter bar, negative = below
+    GCDBarGap = 2, 
     GCDBarColor = { 1, 1, 1, 0.9 },
     GCDBarReverseFill = false,
 }

@@ -1,11 +1,11 @@
 ## Interface: 120000, 120001
 ## Title: Shatter
-## Notes: Standalone stack-tracking bar
+## Notes: Tracks shatter in a statusbar
 ## Author: Citrongroda-TwistingNether
 ## Version: 1.0.0
 ## SavedVariables: ShatterDB
 ## OptionalDeps: LibSharedMedia-3.0
-## IconTexture: Interface\Icons\Spell_Arcane_Arcane04
+## IconTexture: Interface\Icons\Spell_Frost_Frostbolt
 
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
