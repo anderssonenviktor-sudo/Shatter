@@ -39,12 +39,15 @@ local DEFAULTS = {
     TextYOffset = 0,
     HideWhenInactive = false,
     AnchorToECV = false,
-    HighPerformance = false,
     GCDBarEnabled = false,
     GCDBarHeight = 6,
-    GCDBarGap = 2, 
+    GCDBarGap = 2,
     GCDBarColor = { 1, 1, 1, 0.9 },
     GCDBarReverseFill = false,
+}
+
+local LEGACY_DEFAULT_KEYS = {
+    HighPerformance = true,
 }
 
 
@@ -64,6 +67,9 @@ function ns:DeepCopy(src)
 end
 
 function ns:ApplyDefaults(profile)
+    for k in pairs(LEGACY_DEFAULT_KEYS) do
+        profile[k] = nil
+    end
     for k, v in pairs(DEFAULTS) do
         if profile[k] == nil then
             if type(v) == "table" then
@@ -101,6 +107,7 @@ end
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("ADDON_LOADED")
 initFrame:RegisterEvent("PLAYER_LOGIN")
+initFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 
 initFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == addonName then
@@ -137,6 +144,9 @@ initFrame:SetScript("OnEvent", function(self, event, arg1)
         if specID == 64 and ns.db and ns.db.Enabled then
             ns:Enable()
         end
+
+    elseif event == "PLAYER_SPECIALIZATION_CHANGED" and ns.PLAYER_SPECIALIZATION_CHANGED then
+        ns:PLAYER_SPECIALIZATION_CHANGED()
     end
 end)
 

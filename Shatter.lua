@@ -94,11 +94,10 @@ ns.ticks = {}
 ns.trackedInstanceID = nil
 ns.currentStacks = 0
 ns.cachedCDMFrame = nil
-ns.tickerHandle = nil
 ns.previewActive = false
 ns.previewTimer = nil
 ns.enabled = false
-ns.onUpdateActive = false
+ns.hookedCDMFrames = {}
 ns.gcdBar = nil
 ns.gcdStart = 0
 ns.gcdDuration = 0
@@ -200,21 +199,83 @@ end
 function ns:ClearTrackedState()
     self.trackedInstanceID = nil
     self.currentStacks = 0
-    
 end
 
-function ns:FullScanForTrackedAura(skipCDMCache)
+function ns:SweepActiveCDMFrames()
     self:ClearTrackedState()
-    local db = self.db or {}
-    local unit = db.TrackUnit or "target"
-    if not UnitExists(unit) then return end
+    self.cachedCDMFrame = self:FindCDMFrame()
+    if TryReadFromCDMFrame(self.cachedCDMFrame) then return true end
+    return false
+end
 
-    if not skipCDMCache then
-        if TryReadFromCDMFrame(self.cachedCDMFrame) then return end
+
+-- CDM Frame Hooks
+
+function ns:OnCDMFrameUpdate(frame)
+    if not self.enabled or self.previewActive then return end
+    if not self:CDMFrameMatches(frame, (self.db and self.db.CooldownID ~= 0) and self.db.CooldownID or nil) then return end
+
+    self.cachedCDMFrame = frame
+    local auraInstanceID = frame.auraInstanceID
+    if not HasAuraInstanceID(auraInstanceID) then
+        self:ClearTrackedState()
+        self:UpdateBar()
+        return
     end
 
-    self.cachedCDMFrame = self:FindCDMFrame()
-    if TryReadFromCDMFrame(self.cachedCDMFrame) then return end
+    local unit = frame.auraDataUnit or "target"
+    local ok, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, unit, auraInstanceID)
+    if ok and auraData then
+        self.trackedInstanceID = auraInstanceID
+        local stacks = SafeGetApplications(auraData)
+        if stacks then self.currentStacks = stacks end
+    else
+        self:ClearTrackedState()
+    end
+    self:UpdateBar()
+end
+
+function ns:OnCDMFrameHidden(frame)
+    if not self.enabled or self.previewActive then return end
+    if not self:CDMFrameMatches(frame, (self.db and self.db.CooldownID ~= 0) and self.db.CooldownID or nil) then return end
+    self:ClearTrackedState()
+    self:UpdateBar()
+end
+
+function ns:HookCDMFrame(frame)
+    if not frame or self.hookedCDMFrames[frame] then return end
+    self.hookedCDMFrames[frame] = true
+
+    if frame.UpdateAuraInfo then
+        hooksecurefunc(frame, "UpdateAuraInfo", function(f) ns:OnCDMFrameUpdate(f) end)
+    end
+    if frame.RefreshLayout then
+        hooksecurefunc(frame, "RefreshLayout", function(f) ns:OnCDMFrameUpdate(f) end)
+    end
+    frame:HookScript("OnShow", function(f) ns:OnCDMFrameUpdate(f) end)
+    frame:HookScript("OnHide", function(f) ns:OnCDMFrameHidden(f) end)
+end
+
+function ns:HookAllCDMFrames()
+    for _, viewerName in ipairs(CDM_VIEWER_NAMES) do
+        local viewer = _G[viewerName]
+        if viewer then
+            if not viewer.__shatterViewerHooked then
+                viewer.__shatterViewerHooked = true
+                if viewer.RefreshLayout then
+                    hooksecurefunc(viewer, "RefreshLayout", function() ns:HookAllCDMFrames() end)
+                end
+            end
+            if viewer.itemFramePool then
+                for frame in viewer.itemFramePool:EnumerateActive() do
+                    self:HookCDMFrame(frame)
+                end
+            end
+            for _, frame in ipairs({viewer:GetChildren()}) do
+                self:HookCDMFrame(frame)
+            end
+        end
+    end
 end
 
 
@@ -238,92 +299,12 @@ function ns:DiscoverCooldownID()
 end
 
 
--- Ticker / Polling
-
-function ns:StartTicker()
-    local db = self.db or {}
-    if db.HighPerformance then
-        self:StartOnUpdate()
-        return
-    end
-    if self.tickerHandle then return end
-    self.tickerHandle = C_Timer.NewTicker(0.05, function() self:PollAura() end)
-end
-
-function ns:StopTicker()
-    if self.tickerHandle then
-        self.tickerHandle:Cancel()
-        self.tickerHandle = nil
-    end
-    self:StopOnUpdate()
-end
-
-function ns:StartOnUpdate()
-    if self.onUpdateActive then return end
-    self.onUpdateActive = true
-    eventFrame:SetScript("OnUpdate", function() ns:PollAura() end)
-end
-
-function ns:StopOnUpdate()
-    if not self.onUpdateActive then return end
-    self.onUpdateActive = false
-    eventFrame:SetScript("OnUpdate", nil)
-end
-
-function ns:PollAura()
-    if self.previewActive then return end
-    local db = self.db or {}
-    local unit = db.TrackUnit or "target"
-
-    if not UnitExists(unit) then
-        self:StopTicker()
-        self:ClearTrackedState()
-        self:UpdateBar()
-        return
-    end
-
-    -- If we don't have a tracked aura yet, keep searching for the CDM frame
-    if not HasAuraInstanceID(self.trackedInstanceID) then
-        self.cachedCDMFrame = self:FindCDMFrame()
-        if TryReadFromCDMFrame(self.cachedCDMFrame) then
-            self:UpdateBar()
-        else
-            self:ClearTrackedState()
-            self:UpdateBar()
-        end
-        -- Don't stop the ticker — keep polling until we find it or unit goes away
-        return
-    end
-
-    local ok, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, unit, self.trackedInstanceID)
-    if ok and auraData then
-        local newStacks = SafeGetApplications(auraData)
-        if not newStacks then newStacks = self.currentStacks end
-        local okChanged, changed = pcall(function() return newStacks ~= self.currentStacks end)
-        if (okChanged and changed) or not okChanged then
-            self.currentStacks = newStacks
-            self:UpdateBar()
-        end
-    else
-        self.cachedCDMFrame = self:FindCDMFrame()
-        if TryReadFromCDMFrame(self.cachedCDMFrame) then
-            self:UpdateBar()
-        else
-            self:ClearTrackedState()
-            self:FullScanForTrackedAura()
-            self:UpdateBar()
-        end
-    end
-end
-
-
 -- Bar Update
 
 function ns:UpdateBar()
     if self.previewActive then return end
     if not self.frame then return end
     local db = self.db or {}
-    local unit = db.TrackUnit or "target"
 
     local isTracking = HasAuraInstanceID(self.trackedInstanceID)
 
@@ -336,11 +317,6 @@ function ns:UpdateBar()
         else
             self.frame:Show()
         end
-        if UnitExists(unit) and not self.tickerHandle and not self.onUpdateActive then
-            self:StartTicker()
-        elseif not UnitExists(unit) then
-            self:StopTicker()
-        end
         return
     end
 
@@ -351,7 +327,6 @@ function ns:UpdateBar()
     end
 
     self.frame:Show()
-    if not self.tickerHandle and not self.onUpdateActive then self:StartTicker() end
 end
 
 
@@ -785,33 +760,29 @@ function ns:Enable()
 
     self.enabled = true
 
-    self.cachedCDMFrame = self:FindCDMFrame()
     self:CreateFrame()
     self:ApplyVisualSettings()
 
-    eventHandlers["UNIT_AURA"] = function(...) ns:UNIT_AURA(...) end
+    self:HookAllCDMFrames()
+    self:SweepActiveCDMFrames()
+
     eventHandlers["PLAYER_TARGET_CHANGED"] = function(...) ns:PLAYER_TARGET_CHANGED(...) end
     eventHandlers["PLAYER_ENTERING_WORLD"] = function(...) ns:PLAYER_ENTERING_WORLD(...) end
-    eventHandlers["PLAYER_SPECIALIZATION_CHANGED"] = function(...) ns:PLAYER_SPECIALIZATION_CHANGED(...) end
     eventHandlers["UNIT_SPELLCAST_SUCCEEDED"] = function(...) ns:UNIT_SPELLCAST_SUCCEEDED(...) end
     eventHandlers["PLAYER_REGEN_ENABLED"] = function() ns:UpdateBar() end
     eventHandlers["PLAYER_REGEN_DISABLED"] = function() ns:UpdateBar() end
 
-    RegisterEvent("UNIT_AURA")
     RegisterEvent("PLAYER_TARGET_CHANGED")
     RegisterEvent("PLAYER_ENTERING_WORLD")
-    RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
     RegisterEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
     RegisterEvent("PLAYER_REGEN_ENABLED")
     RegisterEvent("PLAYER_REGEN_DISABLED")
 
-    self:FullScanForTrackedAura()
     self:UpdateBar()
 end
 
 function ns:Disable()
     self.enabled = false
-    self:StopTicker()
     self:ClearTrackedState()
     UnregisterAllEvents()
     if self.gcdBar then
@@ -824,75 +795,11 @@ end
 
 -- Event Handlers
 
-function ns:UNIT_AURA(unit, updateInfo)
-    if self.previewActive then return end
-    local db = self.db or {}
-    if unit ~= (db.TrackUnit or "target") then return end
-
-    if not UnitExists(unit) then
-        self:ClearTrackedState()
-        self:UpdateBar()
-        return
-    end
-
-    if not updateInfo or updateInfo.isFullUpdate then
-        self:FullScanForTrackedAura()
-        self:UpdateBar()
-        return
-    end
-
-    if updateInfo.removedAuraInstanceIDs and HasAuraInstanceID(self.trackedInstanceID) then
-        for _, id in ipairs(updateInfo.removedAuraInstanceIDs) do
-            local ok, match = pcall(function() return id == self.trackedInstanceID end)
-            if ok and match then
-                self:ClearTrackedState()
-                break
-            end
-        end
-    end
-
-    if updateInfo.addedAuras and not HasAuraInstanceID(self.trackedInstanceID) then
-        self.cachedCDMFrame = self:FindCDMFrame()
-        TryReadFromCDMFrame(self.cachedCDMFrame)
-    end
-
-    if updateInfo.updatedAuraInstanceIDs and HasAuraInstanceID(self.trackedInstanceID) then
-        for _, id in ipairs(updateInfo.updatedAuraInstanceIDs) do
-            local ok, match = pcall(function() return id == self.trackedInstanceID end)
-            if ok and match then
-                local okAura, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, unit, id)
-                if okAura and auraData then
-                    local stacks = SafeGetApplications(auraData)
-                    if stacks then self.currentStacks = stacks end
-                else
-                    self:ClearTrackedState()
-                    self:FullScanForTrackedAura()
-                end
-                break
-            end
-        end
-    end
-
-    if not HasAuraInstanceID(self.trackedInstanceID) then
-        self:FullScanForTrackedAura()
-    end
-
-    self:UpdateBar()
-end
-
 function ns:PLAYER_TARGET_CHANGED()
     if self.previewActive then return end
-    self:ClearTrackedState()
-    self.cachedCDMFrame = nil
-    self:FullScanForTrackedAura(true)
+    self:HookAllCDMFrames()
+    self:SweepActiveCDMFrames()
     self:UpdateBar()
-
-    local db = self.db or {}
-    local unit = db.TrackUnit or "target"
-    if UnitExists(unit) then
-        -- Start the ticker immediately so it keeps polling for the CDM frame
-        self:StartTicker()
-    end
 end
 
 function ns:PLAYER_ENTERING_WORLD()
@@ -900,7 +807,8 @@ function ns:PLAYER_ENTERING_WORLD()
     self.cachedCDMFrame = nil
     C_Timer.After(0.5, function()
         if self.enabled and not self.previewActive then
-            self:FullScanForTrackedAura()
+            self:HookAllCDMFrames()
+            self:SweepActiveCDMFrames()
             self:UpdateBar()
         end
     end)
@@ -953,9 +861,9 @@ function ns:PLAYER_SPECIALIZATION_CHANGED()
         if not self.enabled and self.db and self.db.Enabled then
             self:Enable()
         end
-        if not self.previewActive then
-            self.cachedCDMFrame = self:FindCDMFrame()
-            self:FullScanForTrackedAura()
+        if self.enabled and not self.previewActive then
+            self:HookAllCDMFrames()
+            self:SweepActiveCDMFrames()
             self:UpdateBar()
         end
     else
@@ -971,12 +879,8 @@ function ns:ApplySettings()
         if not self.enabled then
             self:Enable()
         else
-            -- Restart ticker to pick up HighPerformance changes
-            self:StopTicker()
-            if HasAuraInstanceID(self.trackedInstanceID) or UnitExists(db.TrackUnit or "target") then
-                self:StartTicker()
-            end
-            self.cachedCDMFrame = self:FindCDMFrame()
+            self:HookAllCDMFrames()
+            self:SweepActiveCDMFrames()
             self:CreateFrame()
             self:ApplyVisualSettings()
         end
