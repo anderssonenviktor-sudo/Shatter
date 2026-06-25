@@ -59,93 +59,149 @@ local function SnapFrameToPixels(frame)
     end
 end
 
-local function SafeGetApplications(auraData)
-    local ok, stacks = pcall(function() return auraData.applications or 0 end)
-    return ok and stacks or nil
-end
-
-local function SetAllBarsValue(granularBars, thresholdLayers, value, usePcall)
-    if usePcall then
-        for _, bar in ipairs(granularBars) do pcall(function() bar:SetValue(value) end) end
-        if thresholdLayers then
-            for _, layer in ipairs(thresholdLayers) do
-                for _, bar in ipairs(layer) do pcall(function() bar:SetValue(value) end) end
-            end
-        end
-    else
-        for _, bar in ipairs(granularBars) do bar:SetValue(value) end
-        if thresholdLayers then
-            for _, layer in ipairs(thresholdLayers) do
-                for _, bar in ipairs(layer) do bar:SetValue(value) end
-            end
+-- `value` is the plain `applications` stack count. Call SetValue UNPROTECTED
+-- (a number). Each segment has a 0.5-wide range so it renders binary: full
+-- when value >= i, empty otherwise.
+local function SetAllBarsValue(granularBars, thresholdLayers, value)
+    for _, bar in ipairs(granularBars) do bar:SetValue(value) end
+    if thresholdLayers then
+        for _, layer in ipairs(thresholdLayers) do
+            for _, bar in ipairs(layer) do bar:SetValue(value) end
         end
     end
 end
-
-
--- Tracking State
-
-ns.frame = nil
-ns.innerContainer = nil
-ns.granularBars = {}
-ns.stackText = nil
-ns.ticksContainer = nil
-ns.ticks = {}
-ns.trackedInstanceID = nil
-ns.currentStacks = 0
-ns.cachedCDMFrame = nil
-ns.previewActive = false
-ns.previewTimer = nil
-ns.enabled = false
-ns.hookedCDMFrames = {}
-ns.gcdBar = nil
-ns.gcdStart = 0
-ns.gcdDuration = 0
-
-
--- Event Dispatch
-
-local eventFrame = CreateFrame("Frame")
-local eventHandlers = {}
-
-local function RegisterEvent(event, unit1, unit2)
-    if unit1 then
-        eventFrame:RegisterUnitEvent(event, unit1, unit2)
-    else
-        eventFrame:RegisterEvent(event)
-    end
-end
-
-local function UnregisterAllEvents()
-    eventFrame:UnregisterAllEvents()
-end
-
-eventFrame:SetScript("OnEvent", function(_, event, ...)
-    local handler = eventHandlers[event]
-    if handler then handler(...) end
-end)
 
 
 -- Aura Detection
 
 
+-- 12.0: an auraInstanceID may be a Secret Value. Comparing it (id ~= 0)
+-- taints. Presence is a plain nil-check only, matching ArcUI's IsAuraActive.
 local function HasAuraInstanceID(id)
-    if not id then return false end
-    local ok, result = pcall(function() return id ~= 0 end)
-    if not ok then return true end
-    return result
+    return id ~= nil
 end
 
-local function TryReadFromCDMFrame(cdmFrame)
-    if not cdmFrame then return false end
+-- Stack count, read EXACTLY as ArcUI does (ArcUI_Core.lua durationStacksRef):
+--   auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, id)
+--   return auraData.applications
+-- For this aura `applications` is a plain readable number (cf. ArcUI_Resources
+-- "NON-SECRET: applications ... safe to compare"). It feeds SetValue directly.
+-- NOTE: GetAuraApplicationDisplayCount returns a secret *string* for display
+-- only and cannot drive a StatusBar (SetValue rejects it) — do not use it here.
+local function ReadDisplayCount(cdmFrame, fallbackUnit)
+    if not cdmFrame then return nil end
     local auraInstanceID = cdmFrame.auraInstanceID
-    if not HasAuraInstanceID(auraInstanceID) then return false end
-    local unit = cdmFrame.auraDataUnit or "target"
-    local ok, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, unit, auraInstanceID)
-    if ok and auraData then
-        ns.trackedInstanceID = auraInstanceID
-        local stacks = SafeGetApplications(auraData)
-        if stacks then ns.currentStacks = stacks end
+    if not HasAuraInstanceID(auraInstanceID) then return nil end
+    -- The CDM frame knows its own unit; fall back to the bar's TrackUnit
+    -- (e.g. "player" for self-buffs like Salvo) rather than always "target".
+    local unit = cdmFrame.auraDataUnit or fallbackUnit or "target"
+    local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, auraInstanceID)
+    if auraData then
+        return auraInstanceID, auraData.applications or 0
+    end
+    return nil
+end
+
+
+-- =====================================================================
+-- Bar prototype
+-- =====================================================================
+-- Each tracked aura (Shatter / SalvoBar) is one Bar instance. All bar state
+-- and rendering lives on the instance; spec/spell-specific data lives in
+-- self.cfg. A single shared eventFrame fans runtime events out to every
+-- enabled bar (see Event Dispatch below).
+
+local Bar = {}
+Bar.__index = Bar
+
+function Bar.New(cfg)
+    local self = setmetatable({}, Bar)
+    self.cfg = cfg
+    self.db = nil
+    self.frame = nil
+    self.innerContainer = nil
+    self.granularBars = {}
+    self.thresholdLayers = {}
+    self.stackText = nil
+    self.ticksContainer = nil
+    self.ticks = {}
+    self.trackedInstanceID = nil
+    self.currentStacks = 0
+    self.cachedCDMFrame = nil
+    self.previewActive = false
+    self.previewTimer = nil
+    self.enabled = false
+    self.hookedCDMFrames = {}
+    self.borderTextures = nil
+    self.effectiveMaxStacks = cfg.baseStacks or 20
+    return self
+end
+
+-- Effective max stacks. For talent-driven bars (cfg.autoMaxStacks) this follows
+-- the Sunfury talent; otherwise it is the configured db.MaxStacks.
+function Bar:GetMaxStacks()
+    if self.cfg.autoMaxStacks then
+        return self.effectiveMaxStacks or self.cfg.baseStacks or 20
+    end
+    local db = self.db or {}
+    return db.MaxStacks or 20
+end
+
+-- Recompute effectiveMaxStacks from the Sunfury talent. Returns true if it
+-- changed. Talent detection via C_Traits over the active config; guarded so a
+-- missing/uniterable config never errors.
+function Bar:RefreshMaxStacks()
+    if not self.cfg.autoMaxStacks then return false end
+    local base = self.cfg.baseStacks or 20
+    local talented = self.cfg.talentStacks or base
+    local newMax = base
+
+    local talentID = self.cfg.talentID
+    if talentID and C_ClassTalents and C_ClassTalents.GetActiveConfigID then
+        local configID = C_ClassTalents.GetActiveConfigID()
+        if configID and C_Traits then
+            -- Scan the spec tree for an active node whose entry grants talentID.
+            local found = false
+            local cfgInfo = C_Traits.GetConfigInfo and C_Traits.GetConfigInfo(configID)
+            if cfgInfo and cfgInfo.treeIDs then
+                for _, treeID in ipairs(cfgInfo.treeIDs) do
+                    local nodes = C_Traits.GetTreeNodes and C_Traits.GetTreeNodes(treeID)
+                    if nodes then
+                        for _, nodeID in ipairs(nodes) do
+                            local nodeInfo = C_Traits.GetNodeInfo(configID, nodeID)
+                            if nodeInfo and nodeInfo.activeRank and nodeInfo.activeRank > 0
+                               and nodeInfo.entryIDs then
+                                for _, entryID in ipairs(nodeInfo.entryIDs) do
+                                    -- talentID may be supplied as the entry's
+                                    -- definitionID OR the granted spellID; match
+                                    -- either, since the Midnight trait API is
+                                    -- still iterating on which is canonical.
+                                    local entryInfo = C_Traits.GetEntryInfo(configID, entryID)
+                                    if entryInfo and entryInfo.definitionID then
+                                        if entryInfo.definitionID == talentID then
+                                            found = true
+                                            break
+                                        end
+                                        local defInfo = C_Traits.GetDefinitionInfo(entryInfo.definitionID)
+                                        if defInfo and defInfo.spellID == talentID then
+                                            found = true
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+                            if found then break end
+                        end
+                    end
+                    if found then break end
+                end
+            end
+            if found then newMax = talented end
+        end
+    end
+
+    if newMax ~= self.effectiveMaxStacks then
+        self.effectiveMaxStacks = newMax
         return true
     end
     return false
@@ -154,8 +210,7 @@ end
 
 -- CDM Frame Matching
 
-
-function ns:CDMFrameMatches(frame, cdmCooldownID)
+function Bar:CDMFrameMatches(frame, cdmCooldownID)
     local cdID = frame.cooldownID
     if not cdID and frame.cooldownInfo then
         cdID = frame.cooldownInfo.cooldownID
@@ -166,13 +221,13 @@ function ns:CDMFrameMatches(frame, cdmCooldownID)
     end
     local spellID = frame.spellID or (frame.cooldownInfo and frame.cooldownInfo.spellID)
     if spellID then
-        local ok, match = pcall(function() return spellID == ns.CDM_SPELL_ID end)
+        local ok, match = pcall(function() return spellID == self.cfg.spellID end)
         if ok and match then return true end
     end
     return false
 end
 
-function ns:FindCDMFrame()
+function Bar:FindCDMFrame()
     local db = self.db or {}
     local cdmCooldownID = db.CooldownID and db.CooldownID ~= 0 and db.CooldownID
 
@@ -196,74 +251,94 @@ function ns:FindCDMFrame()
     return nil
 end
 
-function ns:ClearTrackedState()
+function Bar:ClearTrackedState()
     self.trackedInstanceID = nil
     self.currentStacks = 0
 end
 
-function ns:SweepActiveCDMFrames()
+function Bar:TryReadFromCDMFrame(cdmFrame)
+    local auraInstanceID, count = ReadDisplayCount(cdmFrame, self.db and self.db.TrackUnit)
+    if not auraInstanceID then return false end
+    self.trackedInstanceID = auraInstanceID
+    self.currentStacks = count   -- plain applications count; drives SetValue
+    return true
+end
+
+function Bar:SweepActiveCDMFrames()
     self:ClearTrackedState()
     self.cachedCDMFrame = self:FindCDMFrame()
-    if TryReadFromCDMFrame(self.cachedCDMFrame) then return true end
+    if self:TryReadFromCDMFrame(self.cachedCDMFrame) then return true end
     return false
 end
 
 
 -- CDM Frame Hooks
 
-function ns:OnCDMFrameUpdate(frame)
+-- Single CDM-driven update path. Reads the secret-safe display count off the
+-- frame and pushes it to the bars. Every hook routes through here.
+function Bar:OnCDMFrameUpdate(frame)
     if not self.enabled or self.previewActive then return end
     if not self:CDMFrameMatches(frame, (self.db and self.db.CooldownID ~= 0) and self.db.CooldownID or nil) then return end
 
     self.cachedCDMFrame = frame
-    local auraInstanceID = frame.auraInstanceID
-    if not HasAuraInstanceID(auraInstanceID) then
+    if not HasAuraInstanceID(frame.auraInstanceID) then
         self:ClearTrackedState()
         self:UpdateBar()
         return
     end
 
-    local unit = frame.auraDataUnit or "target"
-    local ok, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, unit, auraInstanceID)
-    if ok and auraData then
+    local auraInstanceID, count = ReadDisplayCount(frame, self.db and self.db.TrackUnit)
+    if auraInstanceID then
         self.trackedInstanceID = auraInstanceID
-        local stacks = SafeGetApplications(auraData)
-        if stacks then self.currentStacks = stacks end
+        self.currentStacks = count   -- plain applications count
     else
         self:ClearTrackedState()
     end
     self:UpdateBar()
 end
 
-function ns:OnCDMFrameHidden(frame)
+function Bar:OnCDMFrameHidden(frame)
     if not self.enabled or self.previewActive then return end
     if not self:CDMFrameMatches(frame, (self.db and self.db.CooldownID ~= 0) and self.db.CooldownID or nil) then return end
     self:ClearTrackedState()
     self:UpdateBar()
 end
 
-function ns:HookCDMFrame(frame)
+function Bar:HookCDMFrame(frame)
     if not frame or self.hookedCDMFrames[frame] then return end
     self.hookedCDMFrames[frame] = true
 
-    if frame.UpdateAuraInfo then
-        hooksecurefunc(frame, "UpdateAuraInfo", function(f) ns:OnCDMFrameUpdate(f) end)
+    -- 12.0 (ArcUI_AuraFrames.lua): drive updates entirely off the CDM frame.
+    --   OnAuraInstanceInfoSet/Cleared → aura gained / lost
+    --   OnUnitAuraUpdatedEvent        → stacks change on the SAME instance
+    --                                    (the case missed by gain/loss alone)
+    --   OnNewTarget                   → target swap (target-unit debuffs)
+    if frame.OnAuraInstanceInfoSet then
+        hooksecurefunc(frame, "OnAuraInstanceInfoSet", function(f) self:OnCDMFrameUpdate(f) end)
     end
-    if frame.RefreshLayout then
-        hooksecurefunc(frame, "RefreshLayout", function(f) ns:OnCDMFrameUpdate(f) end)
+    if frame.OnAuraInstanceInfoCleared then
+        hooksecurefunc(frame, "OnAuraInstanceInfoCleared", function(f) self:OnCDMFrameUpdate(f) end)
     end
-    frame:HookScript("OnShow", function(f) ns:OnCDMFrameUpdate(f) end)
-    frame:HookScript("OnHide", function(f) ns:OnCDMFrameHidden(f) end)
+    if frame.OnUnitAuraUpdatedEvent then
+        hooksecurefunc(frame, "OnUnitAuraUpdatedEvent", function(f) self:OnCDMFrameUpdate(f) end)
+    end
+    if frame.OnNewTarget then
+        hooksecurefunc(frame, "OnNewTarget", function(f) self:OnCDMFrameUpdate(f) end)
+    end
+    frame:HookScript("OnShow", function(f) self:OnCDMFrameUpdate(f) end)
+    frame:HookScript("OnHide", function(f) self:OnCDMFrameHidden(f) end)
 end
 
-function ns:HookAllCDMFrames()
+function Bar:HookAllCDMFrames()
     for _, viewerName in ipairs(CDM_VIEWER_NAMES) do
         local viewer = _G[viewerName]
         if viewer then
+            -- The viewer-level RefreshLayout rehook must re-hook for every
+            -- enabled bar, so route it through the shared dispatcher.
             if not viewer.__shatterViewerHooked then
                 viewer.__shatterViewerHooked = true
                 if viewer.RefreshLayout then
-                    hooksecurefunc(viewer, "RefreshLayout", function() ns:HookAllCDMFrames() end)
+                    hooksecurefunc(viewer, "RefreshLayout", function() ns:HookAllBars() end)
                 end
             end
             if viewer.itemFramePool then
@@ -281,7 +356,7 @@ end
 
 -- Cooldown Discovery
 
-function ns:DiscoverCooldownID()
+function Bar:DiscoverCooldownID()
     local db = self.db or {}
     local frame = self:FindCDMFrame()
     if not frame then
@@ -301,7 +376,7 @@ end
 
 -- Bar Update
 
-function ns:UpdateBar()
+function Bar:UpdateBar()
     if self.previewActive then return end
     if not self.frame then return end
     local db = self.db or {}
@@ -310,7 +385,7 @@ function ns:UpdateBar()
 
     if not isTracking then
         self.currentStacks = 0
-        SetAllBarsValue(self.granularBars, self.thresholdLayers, 0, false)
+        SetAllBarsValue(self.granularBars, self.thresholdLayers, 0)
         if db.ShowStackCount then self.stackText:SetText("0") end
         if db.HideWhenInactive and not UnitAffectingCombat("player") then
             self.frame:Hide()
@@ -320,10 +395,10 @@ function ns:UpdateBar()
         return
     end
 
-    SetAllBarsValue(self.granularBars, self.thresholdLayers, self.currentStacks, true)
+    SetAllBarsValue(self.granularBars, self.thresholdLayers, self.currentStacks)
     if db.ShowStackCount then
-        local ok = pcall(function() self.stackText:SetText(self.currentStacks) end)
-        if not ok then self.stackText:SetText("?") end
+        -- Unprotected, like ArcUI (_arcSingleStackText:SetText(count)).
+        self.stackText:SetText(self.currentStacks)
     end
 
     self.frame:Show()
@@ -332,7 +407,7 @@ end
 
 -- Frame Creation
 
-function ns:GetBarTexturePath()
+function Bar:GetBarTexturePath()
     local db = self.db or {}
     local name = db.BarTexture or "Blizzard"
     local LSM = LibStub("LibSharedMedia-3.0", true)
@@ -343,7 +418,7 @@ function ns:GetBarTexturePath()
     return "Interface\\TargetingFrame\\UI-StatusBar"
 end
 
-function ns:CreateFrame()
+function Bar:CreateFrame()
     if self.frame then return end
 
     local db = self.db or {}
@@ -355,7 +430,7 @@ function ns:CreateFrame()
         anchorParent = _G["EssentialCooldownViewer"]
     end
 
-    self.frame = CreateFrame("Frame", "ShatterFrame", UIParent)
+    self.frame = CreateFrame("Frame", self.cfg.frameName, UIParent)
     self.frame:SetSize(PixelSnap(width), PixelSnap(height))
     self.frame:SetFrameStrata("MEDIUM")
     self.frame:SetFrameLevel(10)
@@ -382,7 +457,7 @@ function ns:CreateFrame()
     self.ticksContainer = CreateFrame("Frame", nil, self.innerContainer)
     self.ticksContainer:SetAllPoints(self.innerContainer)
     local maxThresholds = 10
-    local tickLevel = 12 + (db.MaxStacks or 10) * (maxThresholds + 2) + 2
+    local tickLevel = 12 + self:GetMaxStacks() * (maxThresholds + 2) + 2
     self.ticksContainer:SetFrameLevel(tickLevel)
 
     local fontPath = ns:GetFont(db.FontFace)
@@ -406,7 +481,6 @@ function ns:CreateFrame()
     self:ApplyTextShadow()
 
     self:RebuildGranularBars()
-    self:CreateGCDBar()
 
     local hideOnCreate = db.HideWhenInactive and not UnitAffectingCombat("player")
     if hideOnCreate then
@@ -416,57 +490,9 @@ function ns:CreateFrame()
     end
 end
 
-function ns:CreateGCDBar()
-    if self.gcdBar then return end
-    if not self.frame then return end
-    local db = self.db or {}
-
-    local bar = CreateFrame("StatusBar", "ShatterGCDBar", self.frame)
-    bar:SetFrameStrata("MEDIUM")
-    bar:SetStatusBarTexture(self:GetBarTexturePath())
-    bar:SetStatusBarColor(ns.UnpackColor(db.GCDBarColor or { 1, 1, 1, 1 }))
-    bar:SetMinMaxValues(0, 1)
-    bar:SetValue(0)
-    bar:Hide()
-
-    bar.bg = bar:CreateTexture(nil, "BACKGROUND")
-    bar.bg:SetAllPoints()
-    bar.bg:SetColorTexture(0, 0, 0, 0)
-
-    self.gcdBar = bar
-    self:ApplyGCDBarVisuals()
-end
-
-function ns:ApplyGCDBarVisuals()
-    if not self.gcdBar or not self.frame then return end
-    local db = self.db or {}
-    local height = db.GCDBarHeight or 6
-    local gap = db.GCDBarGap or 2
-
-    self.gcdBar:ClearAllPoints()
-    if gap >= 0 then
-        -- Positive gap = above Shatter bar
-        self.gcdBar:SetPoint("BOTTOMLEFT", self.frame, "TOPLEFT", 0, gap)
-        self.gcdBar:SetPoint("BOTTOMRIGHT", self.frame, "TOPRIGHT", 0, gap)
-    else
-        -- Negative gap = below Shatter bar
-        self.gcdBar:SetPoint("TOPLEFT", self.frame, "BOTTOMLEFT", 0, gap)
-        self.gcdBar:SetPoint("TOPRIGHT", self.frame, "BOTTOMRIGHT", 0, gap)
-    end
-    self.gcdBar:SetHeight(PixelSnap(height))
-    self.gcdBar:SetStatusBarTexture(self:GetBarTexturePath())
-    self.gcdBar:SetStatusBarColor(ns.UnpackColor(db.GCDBarColor or { 1, 1, 1, 0.9 }))
-
-    if not db.GCDBarEnabled then
-        self.gcdBar:SetScript("OnUpdate", nil)
-        self.gcdBar:Hide()
-    end
-end
-
-
 -- Granular Bars
 
-function ns:CleanupBars()
+function Bar:CleanupBars()
     ns.CleanupFrameList(self.granularBars)
     self.granularBars = {}
 
@@ -478,9 +504,9 @@ function ns:CleanupBars()
     self.thresholdLayers = {}
 end
 
-function ns:CreateBarLayers()
+function Bar:CreateBarLayers()
     local db = self.db or {}
-    local maxStacks = db.MaxStacks or 10
+    local maxStacks = self:GetMaxStacks()
     local texPath = self:GetBarTexturePath()
     local barColor = db.BarColor or { 0.2, 0.4, 1, 1 }
     local baseLevel = self.innerContainer:GetFrameLevel() + 1
@@ -492,7 +518,11 @@ function ns:CreateBarLayers()
         local bar = CreateFrame("StatusBar", nil, self.innerContainer)
         bar:SetStatusBarTexture(texPath)
         bar:SetFrameLevel(baseLevel + i)
-        bar:SetMinMaxValues(i - 1, i)
+        -- 0.5-wide range (ArcUI CreateChargeSlot pattern) makes each segment a
+        -- binary fill: SetValue(secretStacks) renders full when stacks >= i,
+        -- empty otherwise. A 1.0-wide (i-1, i) range asks the engine to PARTIAL
+        -- fill from a Secret Value, which silently fails -> bar never fills.
+        bar:SetMinMaxValues(i - 0.5, i)
         bar:SetValue(0)
         bar:SetStatusBarColor(ns.UnpackColor(barColor))
         local barTex = bar:GetStatusBarTexture()
@@ -522,11 +552,11 @@ function ns:CreateBarLayers()
                 barTex:SetTexelSnappingBias(0)
             end
 
-            if i <= thresholdStacks then
-                bar:SetMinMaxValues(thresholdStacks, thresholdStacks + 1)
-            else
-                bar:SetMinMaxValues(i - 1, i)
-            end
+            -- Binary 0.5-wide segments (see CreateBarLayers note above). A
+            -- threshold layer's segment i only renders once the count has
+            -- reached this threshold, so gate it at max(i, thresholdStacks).
+            local fillAt = (i <= thresholdStacks) and thresholdStacks or i
+            bar:SetMinMaxValues(fillAt - 0.5, fillAt)
 
             bar:Show()
             layer[i] = bar
@@ -536,9 +566,8 @@ function ns:CreateBarLayers()
     end
 end
 
-function ns:DeferBarPositioning()
-    local db = self.db or {}
-    local maxStacks = db.MaxStacks or 10
+function Bar:DeferBarPositioning()
+    local maxStacks = self:GetMaxStacks()
 
     C_Timer.After(0, function()
         if not self.innerContainer then return end
@@ -575,7 +604,7 @@ function ns:DeferBarPositioning()
     end)
 end
 
-function ns:RebuildGranularBars()
+function Bar:RebuildGranularBars()
     if not self.innerContainer then return end
     self:CleanupBars()
     self:CreateBarLayers()
@@ -585,7 +614,7 @@ end
 
 -- Visual Settings
 
-function ns:ApplyBorder()
+function Bar:ApplyBorder()
     if not self.frame then return end
     local db = self.db or {}
     local borderColor = db.BorderColor or { 1, 1, 1, 1 }
@@ -631,7 +660,7 @@ function ns:ApplyBorder()
     end
 end
 
-function ns:ApplyTextPosition()
+function Bar:ApplyTextPosition()
     if not self.stackText then return end
     local db = self.db or {}
     local pos = db.TextPosition or "CENTER"
@@ -640,7 +669,7 @@ function ns:ApplyTextPosition()
     self.stackText:SetPoint(pos, anchor, pos, db.TextXOffset or 0, db.TextYOffset or 0)
 end
 
-function ns:ApplyTextShadow()
+function Bar:ApplyTextShadow()
     if not self.stackText then return end
     local db = self.db or {}
     if db.TextShadow then
@@ -654,7 +683,7 @@ end
 
 -- Tick Marks
 
-function ns:SetupTicks()
+function Bar:SetupTicks()
     for _, tick in ipairs(self.ticks) do
         tick:SetParent(nil)
     end
@@ -664,7 +693,7 @@ function ns:SetupTicks()
     local raw = db.CustomTickValues or ""
     if raw:match("^%s*$") then return end
 
-    local maxStacks = db.MaxStacks or 10
+    local maxStacks = self:GetMaxStacks()
     if maxStacks < 2 then return end
 
     local tickWidth = db.TickWidth or 1
@@ -696,7 +725,7 @@ function ns:SetupTicks()
     end
 end
 
-function ns:ApplyVisualSettings()
+function Bar:ApplyVisualSettings()
     if not self.frame then return end
     local db = self.db or {}
 
@@ -740,8 +769,6 @@ function ns:ApplyVisualSettings()
     self:ApplyTextPosition()
     self:ApplyTextShadow()
 
-    self:ApplyGCDBarVisuals()
-
     C_Timer.After(0, function()
         if not self.frame then return end
         self:RebuildGranularBars()
@@ -753,56 +780,43 @@ end
 
 -- Enable / Disable
 
-function ns:Enable()
+function Bar:Enable()
     if self.enabled then return end
     local db = self.db or {}
     if not db.Enabled then return end
 
     self.enabled = true
 
+    self:RefreshMaxStacks()
     self:CreateFrame()
     self:ApplyVisualSettings()
 
     self:HookAllCDMFrames()
     self:SweepActiveCDMFrames()
 
-    eventHandlers["PLAYER_TARGET_CHANGED"] = function(...) ns:PLAYER_TARGET_CHANGED(...) end
-    eventHandlers["PLAYER_ENTERING_WORLD"] = function(...) ns:PLAYER_ENTERING_WORLD(...) end
-    eventHandlers["UNIT_SPELLCAST_SUCCEEDED"] = function(...) ns:UNIT_SPELLCAST_SUCCEEDED(...) end
-    eventHandlers["PLAYER_REGEN_ENABLED"] = function() ns:UpdateBar() end
-    eventHandlers["PLAYER_REGEN_DISABLED"] = function() ns:UpdateBar() end
-
-    RegisterEvent("PLAYER_TARGET_CHANGED")
-    RegisterEvent("PLAYER_ENTERING_WORLD")
-    RegisterEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-    RegisterEvent("PLAYER_REGEN_ENABLED")
-    RegisterEvent("PLAYER_REGEN_DISABLED")
+    ns:EnsureEventsRegistered()
 
     self:UpdateBar()
 end
 
-function ns:Disable()
+function Bar:Disable()
     self.enabled = false
     self:ClearTrackedState()
-    UnregisterAllEvents()
-    if self.gcdBar then
-        self.gcdBar:SetScript("OnUpdate", nil)
-        self.gcdBar:Hide()
-    end
     if self.frame then self.frame:Hide() end
+    ns:UpdateEventRegistration()
 end
 
 
--- Event Handlers
+-- Per-bar runtime event responses (called by the shared dispatcher)
 
-function ns:PLAYER_TARGET_CHANGED()
+function Bar:OnTargetChanged()
     if self.previewActive then return end
     self:HookAllCDMFrames()
     self:SweepActiveCDMFrames()
     self:UpdateBar()
 end
 
-function ns:PLAYER_ENTERING_WORLD()
+function Bar:OnEnteringWorld()
     self:ClearTrackedState()
     self.cachedCDMFrame = nil
     C_Timer.After(0.5, function()
@@ -814,54 +828,17 @@ function ns:PLAYER_ENTERING_WORLD()
     end)
 end
 
-function ns:UNIT_SPELLCAST_SUCCEEDED(unit, _, spellID)
-    if unit ~= "player" then return end
-    if spellID ~= ns.ICE_LANCE_SPELL_ID then return end
-    if not (self.db and self.db.GCDBarEnabled) then return end
-    if not self.gcdBar then return end
-
-    -- Models Ice Lance missile travel: launch delay + yards / projectile speed.
-    local LAUNCH_DELAY = 0.1
-    local PROJECTILE_SPEED = 50
-    local duration = LAUNCH_DELAY + 40 / PROJECTILE_SPEED
-    local rc = LibStub and LibStub("LibRangeCheck-3.0", true)
-    if rc and UnitExists("target") then
-        local minR, maxR = rc:GetRange("target")
-        local yards = maxR or minR
-        if yards then
-            if yards > 40 then yards = 40 end
-            if yards < 0 then yards = 0 end
-            duration = LAUNCH_DELAY + yards / PROJECTILE_SPEED
-        end
-    end
-
-    local reverse = self.db.GCDBarReverseFill
-    self.gcdStart = GetTime()
-    self.gcdDuration = duration
-    self.gcdBar:SetMinMaxValues(0, duration)
-    self.gcdBar:SetValue(reverse and 0 or duration)
-    self.gcdBar:SetAlpha(1)
-    self.gcdBar:Show()
-    self.gcdBar:SetScript("OnUpdate", function(bar)
-        local remaining = (ns.gcdStart + ns.gcdDuration) - GetTime()
-        if remaining <= 0 then
-            bar:SetValue(reverse and ns.gcdDuration or 0)
-            bar:SetAlpha(1)
-            bar:Hide()
-            bar:SetScript("OnUpdate", nil)
-            return
-        end
-        bar:SetValue(reverse and (ns.gcdDuration - remaining) or remaining)
-    end)
-end
-
-function ns:PLAYER_SPECIALIZATION_CHANGED()
+function Bar:OnSpecOrTalentChanged()
     local specID = PlayerUtil.GetCurrentSpecID()
-    if specID == 64 then
+    if specID == self.cfg.specID then
         if not self.enabled and self.db and self.db.Enabled then
             self:Enable()
         end
         if self.enabled and not self.previewActive then
+            if self:RefreshMaxStacks() then
+                self:RebuildGranularBars()
+                self:SetupTicks()
+            end
             self:HookAllCDMFrames()
             self:SweepActiveCDMFrames()
             self:UpdateBar()
@@ -873,7 +850,7 @@ function ns:PLAYER_SPECIALIZATION_CHANGED()
     end
 end
 
-function ns:ApplySettings()
+function Bar:ApplySettings()
     local db = self.db or {}
     if db.Enabled then
         if not self.enabled then
@@ -891,7 +868,7 @@ function ns:ApplySettings()
     end
 end
 
-function ns:Refresh()
+function Bar:Refresh()
     if self.frame then
         self:ApplyVisualSettings()
     end
@@ -900,17 +877,17 @@ end
 
 -- Preview
 
-function ns:ShowPreview()
+function Bar:ShowPreview()
     self:CreateFrame()
     self:ApplyVisualSettings()
 
     self.previewActive = true
 
     local db = self.db or {}
-    local maxStacks = db.MaxStacks or 10
+    local maxStacks = self:GetMaxStacks()
     local animVal = 0
 
-    SetAllBarsValue(self.granularBars, self.thresholdLayers, 0, false)
+    SetAllBarsValue(self.granularBars, self.thresholdLayers, 0)
     self.frame:Show()
 
     if self.previewTimer then self.previewTimer:Cancel() end
@@ -918,14 +895,14 @@ function ns:ShowPreview()
         if not self.previewActive then return end
         animVal = animVal + 1
         if animVal > maxStacks then animVal = 0 end
-        SetAllBarsValue(self.granularBars, self.thresholdLayers, animVal, false)
+        SetAllBarsValue(self.granularBars, self.thresholdLayers, animVal)
         if db.ShowStackCount then
             self.stackText:SetText(tostring(animVal))
         end
     end)
 end
 
-function ns:HidePreview()
+function Bar:HidePreview()
     self.previewActive = false
     if self.previewTimer then
         self.previewTimer:Cancel()
@@ -940,10 +917,143 @@ function ns:HidePreview()
     end
 end
 
-function ns:TogglePreview()
+function Bar:TogglePreview()
     if self.previewActive then
         self:HidePreview()
     else
         self:ShowPreview()
     end
 end
+
+
+-- =====================================================================
+-- Bar registry + shared event dispatch
+-- =====================================================================
+
+ns.bars = ns.bars or {}
+ns.barsByKey = ns.barsByKey or {}
+
+function ns:RegisterBar(cfg)
+    local bar = Bar.New(cfg)
+    self.bars[#self.bars + 1] = bar
+    self.barsByKey[cfg.key] = bar
+    -- If the profile is already loaded, wire up the bar's db immediately.
+    if self.db and self.db.bars then
+        bar.db = self.db.bars[cfg.key]
+    end
+    return bar
+end
+
+-- Re-point every bar's db at the active profile (called on load / switch).
+function ns:RebindBarDBs()
+    if not self.db or not self.db.bars then return end
+    for _, bar in ipairs(self.bars) do
+        bar.db = self.db.bars[bar.cfg.key]
+    end
+end
+
+-- Rehook CDM frames for every enabled bar (RefreshLayout fan-out).
+function ns:HookAllBars()
+    for _, bar in ipairs(self.bars) do
+        if bar.enabled and not bar.previewActive then
+            bar:HookAllCDMFrames()
+        end
+    end
+end
+
+-- Enable/disable each bar according to the player's current spec.
+function ns:UpdateBarsForSpec()
+    for _, bar in ipairs(self.bars) do
+        bar:OnSpecOrTalentChanged()
+    end
+end
+
+-- Shared event frame. Runtime events fan out to every enabled bar; the trait
+-- event only matters to talent-driven bars.
+local eventFrame = CreateFrame("Frame")
+local registered = false
+
+local function ForEachEnabled(method, ...)
+    for _, bar in ipairs(ns.bars) do
+        if bar.enabled then
+            bar[method](bar, ...)
+        end
+    end
+end
+
+eventFrame:SetScript("OnEvent", function(_, event)
+    if event == "PLAYER_TARGET_CHANGED" then
+        ForEachEnabled("OnTargetChanged")
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        ForEachEnabled("OnEnteringWorld")
+    elseif event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_REGEN_DISABLED" then
+        ForEachEnabled("UpdateBar")
+    elseif event == "TRAIT_CONFIG_UPDATED" then
+        for _, bar in ipairs(ns.bars) do
+            if bar.enabled and bar.cfg.autoMaxStacks and not bar.previewActive then
+                if bar:RefreshMaxStacks() then
+                    bar:RebuildGranularBars()
+                    bar:SetupTicks()
+                    bar:UpdateBar()
+                end
+            end
+        end
+    end
+end)
+
+-- Register the shared events once, as soon as any bar is enabled.
+function ns:EnsureEventsRegistered()
+    if registered then return end
+    registered = true
+    eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+    eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+    eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+    eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
+end
+
+-- If no bar is enabled anymore, drop the shared registration.
+function ns:UpdateEventRegistration()
+    if not registered then return end
+    for _, bar in ipairs(self.bars) do
+        if bar.enabled then return end
+    end
+    registered = false
+    eventFrame:UnregisterAllEvents()
+end
+
+-- Called by Core on PLAYER_SPECIALIZATION_CHANGED.
+function ns:PLAYER_SPECIALIZATION_CHANGED()
+    self:UpdateBarsForSpec()
+end
+
+
+-- =====================================================================
+-- Bar registration
+-- =====================================================================
+
+ns:RegisterBar({
+    key       = "shatter",
+    title     = "Shatter",
+    subtitle  = "Freezing stack tracker for Frost Mage",
+    specID    = 64,
+    spellID   = 1246769,
+    frameName = "ShatterFrame",
+})
+
+ns:RegisterBar({
+    key          = "salvo",
+    title        = "SalvoBar",
+    subtitle     = "Salvo stack tracker for Arcane Mage",
+    specID       = 62,
+    spellID      = 384452,
+    frameName    = "SalvoBarFrame",
+    talentID     = 1260616,   -- Sunfury (raises stack max)
+    baseStacks   = 20,
+    talentStacks = 25,
+    autoMaxStacks = true,
+    dbDefaults   = {
+        BarColor  = { 0.6, 0.3, 0.95, 1 },   -- arcane purple
+        TrackUnit = "player",                -- Salvo is a self-buff
+    },
+})

@@ -1,35 +1,184 @@
 -- Shatter – Config
 local addonName, ns = ...
 
-local LSM = LibStub("LibSharedMedia-3.0", true)
+local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
 
+-- =====================================================================
+-- Theme
+-- =====================================================================
 
--- UI Factories
+local THEME = {
+    cardBg      = { 0.06, 0.06, 0.07, 0.6 },
+    cardBorder  = { 0.20, 0.20, 0.22, 1 },
+    headerText  = { 0.92, 0.92, 0.94 },            -- card titles: off-white
+    rowH        = 30,
+    pad         = 14,                              -- card inner padding
+    colGap      = 22,
+    rowGap      = 12,                              -- vertical gap between rows
+    label       = { 0.82, 0.83, 0.86 },
+    sublabel    = { 0.52, 0.53, 0.58 },
+}
 
-local function CreateSectionHeader(parent, text)
-    local fs = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    fs:SetText(text)
-    return fs
+local function Tex(parent, layer)
+    return parent:CreateTexture(nil, layer or "BACKGROUND")
 end
 
-local function CreateLabel(parent, text)
+-- A plain bordered card with a header. No color accents.
+local function CreateCard(parent, titleText)
+    local card = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    card:SetBackdrop({
+        bgFile   = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+        insets   = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+    card:SetBackdropColor(THEME.cardBg[1], THEME.cardBg[2], THEME.cardBg[3], THEME.cardBg[4])
+    card:SetBackdropBorderColor(THEME.cardBorder[1], THEME.cardBorder[2], THEME.cardBorder[3], THEME.cardBorder[4])
+
+    local title = card:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 14, -12)
+    title:SetText(titleText)
+    title:SetTextColor(THEME.headerText[1], THEME.headerText[2], THEME.headerText[3])
+    card.title = title
+
+    -- Thin separator under the header
+    local sep = Tex(card, "ARTWORK")
+    sep:SetColorTexture(THEME.cardBorder[1], THEME.cardBorder[2], THEME.cardBorder[3], 1)
+    sep:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    sep:SetPoint("RIGHT", card, "RIGHT", -14, 0)
+    sep:SetHeight(1)
+
+    -- Content origin: everything inside a card anchors to card.content
+    card.content = CreateFrame("Frame", nil, card)
+    card.content:SetPoint("TOPLEFT", 14, -44)
+    card.content:SetPoint("RIGHT", -14, 0)
+    card.content:SetHeight(1)
+
+    return card
+end
+
+-- =====================================================================
+-- Widget factories (consistent height = THEME.rowH)
+-- =====================================================================
+
+local function CreateLabel(parent, text, sub)
     local fs = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     fs:SetText(text)
+    fs:SetTextColor(sub and THEME.sublabel[1] or THEME.label[1],
+                    sub and THEME.sublabel[2] or THEME.label[2],
+                    sub and THEME.sublabel[3] or THEME.label[3])
     return fs
 end
 
-local function CreateEditBox(parent, labelText, value, onChange, width)
-    local w = width or 260
-    local container = CreateFrame("Frame", nil, parent)
-    container:SetSize(w, 44)
+local function CreateButton(parent, text, width, height)
+    local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    button:SetSize(width or 100, height or 24)
+    button:SetText(text)
+    return button
+end
 
-    local label = container:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+-- Slider with click-to-edit inline value. Click the number to type a value.
+-- Returns container (height rowH+16).
+local function CreateSlider(parent, labelText, value, minV, maxV, step, onChange, fmt)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetHeight(THEME.rowH + 16)
+
+    local label = CreateLabel(container, labelText)
     label:SetPoint("TOPLEFT", 0, 0)
-    label:SetText(labelText)
+
+    local fmtVal = fmt or function(v) return tostring(v) end
+
+    -- Snap a raw value to the step grid and clamp to range.
+    local function Snap(v)
+        v = math.floor(v / step + 0.5) * step
+        if v < minV then v = minV elseif v > maxV then v = maxV end
+        return v
+    end
+
+    -- Displayed value text (also the click target).
+    local valFS = container:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    valFS:SetPoint("TOPRIGHT", 0, 0)
+    valFS:SetTextColor(THEME.headerText[1], THEME.headerText[2], THEME.headerText[3])
+    valFS:SetText(fmtVal(value))
+
+    -- Edit box, shown over the value text on click. Hidden by default.
+    local edit = CreateFrame("EditBox", nil, container)
+    edit:SetAutoFocus(false)
+    edit:SetFontObject("GameFontHighlightSmall")
+    edit:SetJustifyH("RIGHT")
+    edit:SetSize(60, 16)
+    edit:SetPoint("TOPRIGHT", 0, 0)
+    edit:Hide()
+
+    -- Click-to-edit hotspot covering the value text.
+    local hit = CreateFrame("Button", nil, container)
+    hit:SetPoint("TOPRIGHT", 0, 0)
+    hit:SetSize(60, 16)
+
+    local slider = CreateFrame("Slider", nil, container, "MinimalSliderTemplate")
+    slider:SetPoint("TOPLEFT", 0, -18)
+    slider:SetPoint("TOPRIGHT", 0, -18)
+    slider:SetHeight(16)
+    slider:SetOrientation("HORIZONTAL")
+    slider:SetMinMaxValues(minV, maxV)
+    slider:SetValueStep(step)
+    slider:SetObeyStepOnDrag(true)
+    slider:SetValue(Snap(value or minV))
+
+    local applying = false
+    slider:SetScript("OnValueChanged", function(_, v)
+        v = Snap(v)
+        valFS:SetText(fmtVal(v))
+        if not applying and onChange then onChange(v) end
+    end)
+
+    local function CommitEdit()
+        local n = tonumber(edit:GetText())
+        edit:Hide()
+        valFS:Show()
+        hit:Show()
+        if n then
+            slider:SetValue(Snap(n))   -- drives OnValueChanged -> onChange
+        end
+    end
+
+    edit:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    edit:SetScript("OnEscapePressed", function(self)
+        self:Hide(); valFS:Show(); hit:Show(); self:ClearFocus()
+    end)
+    edit:SetScript("OnEditFocusLost", CommitEdit)
+
+    hit:SetScript("OnClick", function()
+        local _, v = pcall(function() return slider:GetValue() end)
+        edit:SetText(fmtVal(Snap(v or minV)))
+        valFS:Hide()
+        hit:Hide()
+        edit:Show()
+        edit:SetFocus()
+        edit:HighlightText()
+    end)
+
+    container.slider = slider
+    container.SetValueSilent = function(_, v)
+        applying = true
+        slider:SetValue(Snap(v))
+        valFS:SetText(fmtVal(Snap(v)))
+        applying = false
+    end
+    return container
+end
+
+local function CreateEditBox(parent, labelText, value, onChange)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetHeight(THEME.rowH + 16)
+
+    local label = CreateLabel(container, labelText)
+    label:SetPoint("TOPLEFT", 0, 0)
 
     local box = CreateFrame("EditBox", nil, container, "InputBoxTemplate")
-    box:SetSize(w, 22)
-    box:SetPoint("TOPLEFT", 0, -16)
+    box:SetHeight(22)
+    box:SetPoint("TOPLEFT", 4, -18)
+    box:SetPoint("TOPRIGHT", 0, -18)
     box:SetAutoFocus(false)
     box:SetText(value or "")
     box:SetScript("OnEnterPressed", function(self)
@@ -42,35 +191,36 @@ local function CreateEditBox(parent, labelText, value, onChange, width)
     return container
 end
 
-local function CreateButton(parent, text, width, height)
-    local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-    button:SetSize(width or 100, height or 26)
-    button:SetText(text)
-    return button
-end
-
 local function CreateColorSwatch(parent, labelText, color, onChange)
     local container = CreateFrame("Frame", nil, parent)
-    container:SetSize(200, 22)
+    container:SetHeight(THEME.rowH)
 
-    local label = container:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local label = CreateLabel(container, labelText)
     label:SetPoint("LEFT", 0, 0)
-    label:SetWidth(100)
-    label:SetJustifyH("LEFT")
-    label:SetText(labelText)
 
     local swatch = CreateFrame("Button", nil, container, "BackdropTemplate")
-    swatch:SetSize(22, 22)
-    swatch:SetPoint("LEFT", container, "LEFT", 104, 0)
+    swatch:SetSize(24, 24)
+    swatch:SetPoint("RIGHT", 0, 0)
     swatch:SetBackdrop({
-        bgFile   = "Interface\\Buttons\\WHITE8X8",
         edgeFile = "Interface\\Buttons\\WHITE8X8",
         edgeSize = 1,
     })
-    swatch:SetBackdropBorderColor(1, 1, 1, 1)
+    swatch:SetBackdropBorderColor(0, 0, 0, 1)
+
+    -- Checkerboard backdrop so transparency in the color is visible.
+    local checker = swatch:CreateTexture(nil, "BACKGROUND")
+    checker:SetAllPoints(swatch)
+    checker:SetColorTexture(0.2, 0.2, 0.2, 1)
+
+    -- Fill texture showing the actual color (drawn above the checker).
+    local fill = swatch:CreateTexture(nil, "ARTWORK")
+    fill:SetAllPoints(swatch)
 
     local c = color or { 1, 1, 1, 1 }
-    swatch:SetBackdropColor(ns.UnpackColor(c))
+    fill:SetColorTexture(ns.UnpackColor(c))
+
+    swatch:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(0.7, 0.7, 0.72, 1) end)
+    swatch:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(0, 0, 0, 1) end)
 
     swatch:SetScript("OnClick", function()
         local info = {}
@@ -81,12 +231,12 @@ local function CreateColorSwatch(parent, labelText, color, onChange)
             local r, g, b = ColorPickerFrame:GetColorRGB()
             local a = ColorPickerFrame:GetColorAlpha()
             c[1], c[2], c[3], c[4] = r, g, b, a
-            swatch:SetBackdropColor(r, g, b, a)
+            fill:SetColorTexture(r, g, b, a)
             if onChange then onChange(c) end
         end
         info.cancelFunc = function(prev)
             c[1], c[2], c[3], c[4] = prev.r, prev.g, prev.b, prev.opacity or 1
-            swatch:SetBackdropColor(c[1], c[2], c[3], c[4])
+            fill:SetColorTexture(c[1], c[2], c[3], c[4])
             if onChange then onChange(c) end
         end
         info.opacityFunc = info.swatchFunc
@@ -99,27 +249,36 @@ end
 
 local function CreateDropdown(parent, labelText, options, current, onChange)
     local container = CreateFrame("Frame", nil, parent)
-    container:SetSize(260, 44)
+    container:SetHeight(THEME.rowH + 16)
 
-    local label = container:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local label = CreateLabel(container, labelText)
     label:SetPoint("TOPLEFT", 0, 0)
-    label:SetText(labelText)
 
     local button = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
-    button:SetSize(260, 24)
-    button:SetPoint("TOPLEFT", 0, -16)
+    button:SetHeight(24)
+    button:SetPoint("TOPLEFT", 0, -18)
+    button:SetPoint("TOPRIGHT", 0, -18)
 
-    local displayText = current or ""
-    if type(options) == "table" then
-        for k, v in pairs(options) do
-            if k == current then displayText = v; break end
+    local function DisplayFor(key)
+        if type(options) == "table" then
+            for k, v in pairs(options) do
+                if k == key then return v end
+            end
         end
+        return key or ""
     end
-    button:SetText(displayText)
+    button:SetText(DisplayFor(current))
+    button:GetFontString():SetPoint("LEFT", 8, 0)
+    button:GetFontString():SetJustifyH("LEFT")
+
+    local arrow = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    arrow:SetPoint("RIGHT", -6, 0)
+    arrow:SetText("v")
+    arrow:SetTextColor(unpack(THEME.sublabel))
 
     button:SetScript("OnClick", function(self)
         MenuUtil.CreateContextMenu(self, function(_, rootDescription)
-            rootDescription:SetScrollMode(300)
+            rootDescription:SetScrollMode(320)
             local sorted = {}
             for k, v in pairs(options) do
                 sorted[#sorted + 1] = { key = k, display = v }
@@ -128,6 +287,8 @@ local function CreateDropdown(parent, labelText, options, current, onChange)
             for _, entry in ipairs(sorted) do
                 rootDescription:CreateButton(entry.display, function()
                     button:SetText(entry.display)
+                    button:GetFontString():SetPoint("LEFT", 8, 0)
+                    button:GetFontString():SetJustifyH("LEFT")
                     if onChange then onChange(entry.key) end
                 end)
             end
@@ -138,22 +299,93 @@ local function CreateDropdown(parent, labelText, options, current, onChange)
     return container
 end
 
-local function CreateCheckbox(parent, labelText, checked, onChange)
-    local checkbox = CreateFrame("CheckButton", nil, parent, "InterfaceOptionsCheckButtonTemplate")
+local function CreateCheckbox(parent, labelText, checked, onChange, tooltip)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetHeight(THEME.rowH)
+
+    local checkbox = CreateFrame("CheckButton", nil, container, "InterfaceOptionsCheckButtonTemplate")
+    checkbox:SetPoint("LEFT", -2, 0)
     checkbox:SetChecked(checked)
     checkbox.Text:SetText(labelText)
-    checkbox.Text:SetFontObject("GameFontHighlight")
+    checkbox.Text:SetFontObject("GameFontHighlightSmall")
+    checkbox.Text:SetTextColor(unpack(THEME.label))
     checkbox:SetScript("OnClick", function(self)
         if onChange then onChange(self:GetChecked()) end
     end)
-    return checkbox
+    if tooltip then
+        checkbox:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(tooltip[1], 1, 1, 1)
+            if tooltip[2] then GameTooltip:AddLine(tooltip[2], 1, 0.82, 0, true) end
+            GameTooltip:Show()
+        end)
+        checkbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
+    container.checkbox = checkbox
+    return container
 end
 
+-- =====================================================================
+-- Layout helper: flow widgets into a 1 or 2 column grid inside a card.
+-- =====================================================================
 
--- Import / Export Popup
+local function GridLayout(content, items, columns, totalW)
+    columns = columns or 2
+    local gap = THEME.colGap
+    if not totalW or totalW < 1 then totalW = content:GetWidth() end
+    if not totalW or totalW < 1 then totalW = 480 end
+    local colW = (totalW - gap * (columns - 1)) / columns
+
+    local y = 0
+    local colInRow = 0
+    local rowMaxH = 0
+
+    local function endRow()
+        if colInRow > 0 then
+            y = y - rowMaxH - THEME.rowGap
+        end
+        colInRow = 0
+        rowMaxH = 0
+    end
+
+    for _, item in ipairs(items) do
+        local span = item.span or 1
+        if span > columns then span = columns end
+
+        if colInRow > 0 and (colInRow + span) > columns then
+            endRow()
+        end
+
+        local w = item.frame
+        local widthForSpan = colW * span + gap * (span - 1)
+        local x = colInRow * (colW + gap)
+
+        w:SetParent(content)
+        w:ClearAllPoints()
+        w:SetPoint("TOPLEFT", content, "TOPLEFT", x, y)
+        w:SetWidth(widthForSpan)
+
+        local h = w:GetHeight()
+        if h > rowMaxH then rowMaxH = h end
+        colInRow = colInRow + span
+
+        if colInRow >= columns then
+            endRow()
+        end
+    end
+    endRow()
+
+    content:SetHeight(math.abs(y) + 2)
+    return math.abs(y)
+end
+
+-- =====================================================================
+-- Import / Export popup
+-- =====================================================================
 
 local settingsCategoryID = nil
-local configContentFrame = nil
+-- One panel record per bar: { bar = <Bar>, content = <Frame>, includeProfiles = bool }.
+local barPanels = {}
 
 local function CreateImportExportPopup()
     local popup = CreateFrame("Frame", "ShatterImportExportPopup", UIParent, "BackdropTemplate")
@@ -292,345 +524,121 @@ local function ShowImportPopup()
     popup:Show()
 end
 
+-- =====================================================================
+-- Cards
+-- =====================================================================
 
--- Config Section Builders
+local function BuildLayoutCard(parent, bar)
+    local db = bar.db
+    local card = CreateCard(parent, "Bar Size & Position")
+    local c = card.content
+    local items = {}
 
-local function BuildBarSizeSection(parent, db, yOff)
-    local sizeHeader = CreateSectionHeader(parent, "Bar Size")
-    sizeHeader:SetPoint("TOPLEFT", 20, yOff)
-    yOff = yOff - 30
+    items[#items+1] = { frame = CreateSlider(c, "Width", db.BarWidth or 200, 10, 1000, 1, function(v)
+        db.BarWidth = v; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateSlider(c, "Height", db.BarHeight or 20, 4, 200, 1, function(v)
+        db.BarHeight = v; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateSlider(c, "Scale", db.BarScale or 1.0, 0.1, 5, 0.05, function(v)
+        db.BarScale = v; bar:Refresh() end, function(v) return string.format("%.2f", v) end) }
+    -- Talent-driven bars (SalvoBar) compute max stacks automatically, so no slider.
+    if not bar.cfg.autoMaxStacks then
+        items[#items+1] = { frame = CreateSlider(c, "Max Stacks", db.MaxStacks or 20, 1, 20, 1, function(v)
+            db.MaxStacks = v; bar:ApplySettings() end) }
+    end
+    items[#items+1] = { frame = CreateSlider(c, "X Offset", db.PosX or 0, -800, 800, 1, function(v)
+        db.PosX = v; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateSlider(c, "Y Offset", db.PosY or 0, -800, 800, 1, function(v)
+        db.PosY = v; bar:Refresh() end) }
 
-    local widthBox = CreateEditBox(parent, "Width", tostring(db.BarWidth or 200), function(v)
-        local n = tonumber(v)
-        if n and n >= 10 and n <= 1000 then
-            db.BarWidth = math.floor(n)
-            ns:Refresh()
-        end
-    end, 56)
-    widthBox:SetPoint("TOPLEFT", 20, yOff)
+    items[#items+1] = { frame = CreateCheckbox(c, "Anchor to Essentials", db.AnchorToECV, function(v)
+        db.AnchorToECV = v; bar:Refresh() end,
+        { "Anchor to Essentials" }), span = 1 }
+    items[#items+1] = { frame = CreateCheckbox(c, "Hide When Inactive", db.HideWhenInactive, function(v)
+        db.HideWhenInactive = v; bar:Refresh() end,
+        { "Hide When Inactive", "Hide the bar out of combat when the aura is not on the tracked target. Always shown while in combat." }), span = 1 }
 
-    local heightBox = CreateEditBox(parent, "Height", tostring(db.BarHeight or 20), function(v)
-        local n = tonumber(v)
-        if n and n >= 4 and n <= 200 then
-            db.BarHeight = math.floor(n)
-            ns:Refresh()
-        end
-    end, 56)
-    heightBox:SetPoint("TOPLEFT", 96, yOff)
-
-    local posXBox = CreateEditBox(parent, "X", tostring(db.PosX or 0), function(v)
-        local n = tonumber(v)
-        if n then
-            db.PosX = math.floor(n)
-            ns:Refresh()
-        end
-    end, 56)
-    posXBox:SetPoint("TOPLEFT", 172, yOff)
-
-    local posYBox = CreateEditBox(parent, "Y", tostring(db.PosY or 0), function(v)
-        local n = tonumber(v)
-        if n then
-            db.PosY = math.floor(n)
-            ns:Refresh()
-        end
-    end, 56)
-    posYBox:SetPoint("TOPLEFT", 248, yOff)
-
-    local scaleBox = CreateEditBox(parent, "Scale", tostring(db.BarScale or 1.0), function(v)
-        local n = tonumber(v)
-        if n and n >= 0.1 and n <= 5 then
-            db.BarScale = n
-            ns:Refresh()
-        end
-    end, 56)
-    scaleBox:SetPoint("TOPLEFT", 324, yOff)
-
-    local anchorECV = CreateCheckbox(parent, "Anchor", db.AnchorToECV, function(v)
-        db.AnchorToECV = v; ns:Refresh()
-    end)
-    anchorECV:SetPoint("LEFT", scaleBox, "RIGHT", 10, -8)
-    anchorECV:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Anchor to Essentials", 1, 1, 1)
-        GameTooltip:Show()
-    end)
-    anchorECV:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-    local hideInactive = CreateCheckbox(parent, "Hide When Inactive", db.HideWhenInactive, function(v)
-        db.HideWhenInactive = v; ns:Refresh()
-    end)
-    hideInactive:SetPoint("LEFT", anchorECV, "RIGHT", 80, 0)
-    hideInactive:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Hide When Inactive", 1, 1, 1)
-        GameTooltip:AddLine("Hide the bar out of combat when Shatter is not on the tracked target. Always shown while in combat.", 1, 0.82, 0, true)
-        GameTooltip:Show()
-    end)
-    hideInactive:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    yOff = yOff - 50
-
-    return yOff
+    card.Relayout = function(w) GridLayout(c, items, 2, w) end
+    card.Relayout()
+    return card
 end
 
-local function BuildTrackingSection(parent, db, yOff)
-    local trackHeader = CreateSectionHeader(parent, "Tracking")
-    trackHeader:SetPoint("TOPLEFT", 20, yOff)
-    yOff = yOff - 30
+-- Tracking card has the dynamic CooldownID lock UI; build its own layout.
+local function BuildTrackingCard(parent, bar)
+    local db = bar.db
+    local card = CreateCard(parent, "Tracking")
+    local c = card.content
 
-    local maxStacksBox = CreateEditBox(parent, "Max Stacks", tostring(db.MaxStacks or 10), function(v)
-        local n = tonumber(v)
-        if n and n >= 1 and n <= 20 then
-            db.MaxStacks = math.floor(n)
-            ns:ApplySettings()
-        end
-    end, 80)
-    maxStacksBox:SetPoint("TOPLEFT", 20, yOff)
+    local cdLabel = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    cdLabel:SetPoint("TOPLEFT", 0, 0)
 
-    yOff = yOff - 50
-
-    local cdLabel = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    cdLabel:SetPoint("TOPLEFT", 20, yOff)
-    local cdID = db.CooldownID or 0
-    if cdID ~= 0 then
-        cdLabel:SetTextColor(0.1, 1, 0.1)
-        cdLabel:SetText("Found: CooldownID " .. cdID)
-    else
-        cdLabel:SetTextColor(1, 0.3, 0.3)
-        cdLabel:SetText("Not found - press Lock while debuff is active")
-    end
-
-    local lockBtn = CreateButton(parent, "Lock", 100, 26)
-    lockBtn:SetPoint("LEFT", cdLabel, "RIGHT", 10, 0)
-    lockBtn:SetScript("OnClick", function()
-        local _, err = ns:DiscoverCooldownID()
-        local newID = db.CooldownID or 0
-        if newID ~= 0 then
+    local function RefreshCDLabel()
+        local cdID = db.CooldownID or 0
+        if cdID ~= 0 then
             cdLabel:SetTextColor(0.1, 1, 0.1)
-            cdLabel:SetText("Found: CooldownID " .. newID)
-            ns:Print("Lock successful — CooldownID " .. newID)
+            cdLabel:SetText("Found: CooldownID " .. cdID)
         else
             cdLabel:SetTextColor(1, 0.3, 0.3)
+            cdLabel:SetText("Not found - press Lock while debuff is active")
+        end
+    end
+    RefreshCDLabel()
+
+    local lockBtn = CreateButton(c, "Lock", 100, 24)
+    lockBtn:SetPoint("LEFT", cdLabel, "RIGHT", 10, 0)
+    lockBtn:SetScript("OnClick", function()
+        local _, err = bar:DiscoverCooldownID()
+        local newID = db.CooldownID or 0
+        RefreshCDLabel()
+        if newID ~= 0 then
+            ns:Print("Lock successful — CooldownID " .. newID)
+        else
             cdLabel:SetText("Not found - see chat for details")
             ns:Print("Lock failed — " .. (err or "no cooldownID returned"))
         end
     end)
+    local auraName = bar.cfg.title
     lockBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("Lock Hook", 1, 1, 1)
-        GameTooltip:AddLine("- Press this when you have Shatter applied to the target to lock the hook", 1, 0.82, 0, true)
-        GameTooltip:AddLine("- Make sure you have Shatter tracked in blizzards CDM settings", 1, 0.82, 0, true)
+        GameTooltip:AddLine("- Press this when you have " .. auraName .. " applied to the target to lock the hook", 1, 0.82, 0, true)
+        GameTooltip:AddLine("- Make sure you have " .. auraName .. " tracked in blizzards CDM settings", 1, 0.82, 0, true)
         GameTooltip:AddLine("- Relog if the hook cant find it", 1, 0.82, 0, true)
         GameTooltip:Show()
     end)
     lockBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    yOff = yOff - 35
 
-    return yOff
-end
-
-local function BuildColorsSection(parent, db, yOff)
-    local colorHeader = CreateSectionHeader(parent, "Colors")
-    colorHeader:SetPoint("TOPLEFT", 20, yOff)
-    yOff = yOff - 28
-
-    local barColor = CreateColorSwatch(parent, "Bar Color", db.BarColor, function(c)
-        db.BarColor = c; ns:Refresh()
-    end)
-    barColor:SetPoint("TOPLEFT", 20, yOff)
-
-    local bgColor = CreateColorSwatch(parent, "Background", db.BackgroundColor, function(c)
-        db.BackgroundColor = c; ns:Refresh()
-    end)
-    bgColor:SetPoint("TOPLEFT", 260, yOff)
-    yOff = yOff - 28
-
-    local borderColor = CreateColorSwatch(parent, "Border Color", db.BorderColor, function(c)
-        db.BorderColor = c; ns:Refresh()
-    end)
-    borderColor:SetPoint("TOPLEFT", 20, yOff)
-
-    local tickColor = CreateColorSwatch(parent, "Tick Color", db.TickColor, function(c)
-        db.TickColor = c; ns:Refresh()
-    end)
-    tickColor:SetPoint("TOPLEFT", 260, yOff)
-    yOff = yOff - 28
-
-    local textColor = CreateColorSwatch(parent, "Stack Text", db.TextColor, function(c)
-        db.TextColor = c; ns:Refresh()
-    end)
-    textColor:SetPoint("TOPLEFT", 20, yOff)
-    yOff = yOff - 35
-
-    return yOff
-end
-
-local function BuildGCDBarSection(parent, db, yOff)
-    local header = CreateSectionHeader(parent, "Track Ice lance projectile")
-    header:SetPoint("TOPLEFT", 20, yOff)
-    yOff = yOff - 28
-
-    local enable = CreateCheckbox(parent, "Projectile Bar", db.GCDBarEnabled, function(v)
-        db.GCDBarEnabled = v
-        ns:Refresh()
-    end)
-    enable:SetPoint("TOPLEFT", 20, yOff)
-    enable:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Range Bar", 1, 1, 1)
-        GameTooltip:AddLine("On Ice Lance cast, runs a status bar whose duration scales with target range: 40y = 1.5s, 0y = 0.2s (linear).", 1, 0.82, 0, true)
-        GameTooltip:Show()
-    end)
-    enable:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-    local heightBox = CreateEditBox(parent, "Height", tostring(db.GCDBarHeight or 6), function(v)
-        local n = tonumber(v)
-        if n and n >= 1 and n <= 50 then
-            db.GCDBarHeight = math.floor(n)
-            ns:Refresh()
-        end
-    end, 56)
-    heightBox:SetPoint("TOPLEFT", 180, yOff)
-
-    local gapBox = CreateEditBox(parent, "Gap", tostring(db.GCDBarGap or 2), function(v)
-        local n = tonumber(v)
-        if n and n >= -50 and n <= 50 then
-            db.GCDBarGap = math.floor(n)
-            ns:Refresh()
-        end
-    end, 56)
-    gapBox:SetPoint("TOPLEFT", 260, yOff)
-    gapBox:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("Gap", 1, 1, 1)
-        GameTooltip:AddLine("Positive = above the Shatter bar, negative = below.", 1, 0.82, 0, true)
-        GameTooltip:Show()
-    end)
-    gapBox:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-    local reverseFill = CreateCheckbox(parent, "Reverse Fill", db.GCDBarReverseFill, function(v)
-        db.GCDBarReverseFill = v
-        ns:Refresh()
-    end)
-    reverseFill:SetPoint("TOPLEFT", 340, yOff - 14)
-    yOff = yOff - 32
-
-    local gcdColor = CreateColorSwatch(parent, "Projectile Bar Color", db.GCDBarColor, function(c)
-        db.GCDBarColor = c
-        ns:Refresh()
-    end)
-    gcdColor:SetPoint("TOPLEFT", 20, yOff)
-    yOff = yOff - 35
-
-    return yOff
-end
-
-local function BuildThresholdsAndTicksSection(parent, db, yOff)
-    local thresholdHeader = CreateSectionHeader(parent, "Color Thresholds")
-    thresholdHeader:SetPoint("TOPLEFT", 20, yOff)
-    yOff = yOff - 20
-
-    local threshDesc = CreateLabel(parent, "Bar recolors when stacks cross each threshold")
-    threshDesc:SetPoint("TOPLEFT", 20, yOff)
-    yOff = yOff - 20
-
-    local threshContainer = CreateFrame("Frame", nil, parent)
-    threshContainer:SetPoint("TOPLEFT", 20, yOff)
-    threshContainer:SetSize(480, 1)
-
-    local function RebuildThresholds()
-        for _, child in pairs({ threshContainer:GetChildren() }) do
-            child:Hide(); child:SetParent(nil)
-        end
-
-        local thresholds = db.ColorThresholds or {}
-        local rowY = 0
-
-        for i, t in ipairs(thresholds) do
-            local idx = i
-            local row = CreateFrame("Frame", nil, threshContainer)
-            row:SetSize(460, 30)
-            row:SetPoint("TOPLEFT", 0, rowY)
-
-            local stackLabel = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-            stackLabel:SetPoint("TOPLEFT", 0, 0)
-            stackLabel:SetText("Stacks >")
-
-            local stackBox = CreateFrame("EditBox", nil, row, "InputBoxTemplate")
-            stackBox:SetSize(50, 22)
-            stackBox:SetPoint("LEFT", stackLabel, "RIGHT", 8, 0)
-            stackBox:SetAutoFocus(false)
-            stackBox:SetNumeric(true)
-            stackBox:SetText(tostring(t.stacks or 1))
-            stackBox:SetScript("OnEnterPressed", function(self)
-                self:ClearFocus()
-                local n = tonumber(self:GetText())
-                if n and n >= 1 then
-                    db.ColorThresholds[idx].stacks = math.floor(n)
-                    table.sort(db.ColorThresholds, function(a, b) return (a.stacks or 0) < (b.stacks or 0) end)
-                    ns:Refresh()
-                end
-            end)
-            stackBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-
-            local colorSwatch = CreateColorSwatch(row, "#" .. i, t.color or { 1, 1, 1, 1 }, function(c)
-                db.ColorThresholds[idx].color = c
-                ns:Refresh()
-            end)
-            colorSwatch:SetSize(60, 22)
-            colorSwatch:SetPoint("LEFT", stackBox, "RIGHT", 8, 0)
-
-            local removeBtn = CreateButton(row, "X", 26, 26)
-            removeBtn:SetPoint("LEFT", colorSwatch, "LEFT", 62, 0)
-            removeBtn:SetScript("OnClick", function()
-                table.remove(db.ColorThresholds, idx)
-                RebuildThresholds()
-                ns:Refresh()
-            end)
-
-            rowY = rowY - 30
-        end
-
-        threshContainer:SetHeight(math.max(1, math.abs(rowY)))
+    card.Relayout = function(w)
+        c:SetHeight(THEME.rowH)
     end
-
-    RebuildThresholds()
-
-    local tickHeader = CreateSectionHeader(parent, "Ticks")
-    tickHeader:SetPoint("TOPLEFT", 300, yOff)
-
-    local customTickBox = CreateEditBox(parent, "Tick Values (e.g. 5, 10, 15)", db.CustomTickValues or "", function(v)
-        db.CustomTickValues = v; ns:Refresh()
-    end)
-    customTickBox:SetPoint("TOPLEFT", tickHeader, "BOTTOMLEFT", 0, -8)
-
-    local tickWidthBox = CreateEditBox(parent, "Tick Thickness", tostring(db.TickWidth or 1), function(v)
-        local n = tonumber(v)
-        if n and n >= 1 and n <= 20 then
-            db.TickWidth = math.floor(n)
-            ns:Refresh()
-        end
-    end, 80)
-    tickWidthBox:SetPoint("TOPLEFT", customTickBox, "BOTTOMLEFT", 0, -8)
-
-    local addBtn = CreateButton(parent, "+ Add Threshold", 160, 26)
-    addBtn:SetPoint("TOPLEFT", threshContainer, "BOTTOMLEFT", 0, -8)
-    addBtn:SetScript("OnClick", function()
-        db.ColorThresholds = db.ColorThresholds or {}
-        local newStacks = (#db.ColorThresholds > 0)
-            and ((db.ColorThresholds[#db.ColorThresholds].stacks or 0) + 1)
-            or 1
-        table.insert(db.ColorThresholds, { stacks = newStacks, color = { 1, 0.5, 0, 1 } })
-        table.sort(db.ColorThresholds, function(a, b) return (a.stacks or 0) < (b.stacks or 0) end)
-        RebuildThresholds()
-        ns:Refresh()
-    end)
-
-    return yOff, addBtn
+    card.Relayout()
+    return card
 end
 
-local function BuildTexturesAndFontsSection(parent, db, addBtn)
-    local textureHeader = CreateSectionHeader(parent, "Textures & Fonts")
-    textureHeader:SetPoint("TOPLEFT", addBtn, "BOTTOMLEFT", 0, -20)
+local function BuildColorsCard(parent, bar)
+    local db = bar.db
+    local card = CreateCard(parent, "Colors & Border")
+    local c = card.content
+    local items = {}
+
+    items[#items+1] = { frame = CreateColorSwatch(c, "Bar Color", db.BarColor, function(col)
+        db.BarColor = col; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateColorSwatch(c, "Background", db.BackgroundColor, function(col)
+        db.BackgroundColor = col; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateColorSwatch(c, "Border Color", db.BorderColor, function(col)
+        db.BorderColor = col; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateCheckbox(c, "Show Border", db.ShowBorder, function(v)
+        db.ShowBorder = v; bar:Refresh() end) }
+
+    card.Relayout = function(w) GridLayout(c, items, 2, w) end
+    card.Relayout()
+    return card
+end
+
+local function BuildTextureCard(parent, bar)
+    local db = bar.db
+    local card = CreateCard(parent, "Texture & Font")
+    local c = card.content
+    local items = {}
 
     local textures = {}
     if LSM then
@@ -638,10 +646,8 @@ local function BuildTexturesAndFontsSection(parent, db, addBtn)
     else
         textures["Blizzard"] = "Blizzard"
     end
-    local textureDropdown = CreateDropdown(parent, "Bar Texture", textures, db.BarTexture or "Blizzard", function(v)
-        db.BarTexture = v; ns:Refresh()
-    end)
-    textureDropdown:SetPoint("TOPLEFT", textureHeader, "BOTTOMLEFT", 0, -8)
+    items[#items+1] = { frame = CreateDropdown(c, "Bar Texture", textures, db.BarTexture or "Blizzard", function(v)
+        db.BarTexture = v; bar:Refresh() end) }
 
     local fonts = {}
     if LSM then
@@ -649,62 +655,232 @@ local function BuildTexturesAndFontsSection(parent, db, addBtn)
     else
         fonts["Friz Quadrata TT"] = "Friz Quadrata TT"
     end
-    local fontDropdown = CreateDropdown(parent, "Font Face", fonts, db.FontFace or "Friz Quadrata TT", function(v)
-        db.FontFace = v; ns:Refresh()
-    end)
-    fontDropdown:SetPoint("TOPLEFT", textureDropdown, "TOPRIGHT", 20, 0)
+    items[#items+1] = { frame = CreateDropdown(c, "Font Face", fonts, db.FontFace or "Friz Quadrata TT", function(v)
+        db.FontFace = v; bar:Refresh() end) }
 
-    return textureDropdown
+    local outlines = { NONE = "None", OUTLINE = "Outline", THICKOUTLINE = "Thick Outline" }
+    items[#items+1] = { frame = CreateDropdown(c, "Outline", outlines, db.TextOutline or "OUTLINE", function(v)
+        db.TextOutline = v; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateSlider(c, "Font Size", db.FontSize or 20, 0, 60, 1, function(v)
+        db.FontSize = v; bar:Refresh() end) }
+
+    card.Relayout = function(w) GridLayout(c, items, 2, w) end
+    card.Relayout()
+    return card
 end
 
-local function BuildTextSection(parent, db, textureDropdown)
-    local textHeader = CreateSectionHeader(parent, "Text settings")
-    textHeader:SetPoint("TOPLEFT", textureDropdown, "BOTTOMLEFT", 0, -20)
+local function BuildStackTextCard(parent, bar)
+    local db = bar.db
+    local card = CreateCard(parent, "Stack Text")
+    local c = card.content
+    local items = {}
 
-    local fontSizeBox = CreateEditBox(parent, "Font Size", tostring(db.FontSize or 20), function(v)
-        local n = tonumber(v)
-        if n and n >= 0 and n <= 60 then
-            db.FontSize = math.floor(n)
-            ns:Refresh()
-        end
-    end, 80)
-    fontSizeBox:SetPoint("TOPLEFT", textHeader, "BOTTOMLEFT", 0, -8)
+    items[#items+1] = { frame = CreateCheckbox(c, "Show Stack Count", db.ShowStackCount, function(v)
+        db.ShowStackCount = v; bar:Refresh() end), span = 1 }
+    items[#items+1] = { frame = CreateCheckbox(c, "Text Shadow", db.TextShadow, function(v)
+        db.TextShadow = v; bar:Refresh() end), span = 1 }
+    items[#items+1] = { frame = CreateColorSwatch(c, "Stack Text", db.TextColor, function(col)
+        db.TextColor = col; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateSlider(c, "Text X Offset", db.TextXOffset or 0, -200, 200, 1, function(v)
+        db.TextXOffset = v; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateSlider(c, "Text Y Offset", db.TextYOffset or 0, -200, 200, 1, function(v)
+        db.TextYOffset = v; bar:Refresh() end) }
 
-    local textXBox = CreateEditBox(parent, "Text X Offset", tostring(db.TextXOffset or 0), function(v)
-        local n = tonumber(v)
-        if n then
-            db.TextXOffset = n
-            ns:Refresh()
-        end
-    end, 80)
-    textXBox:SetPoint("TOPLEFT", fontSizeBox, "TOPRIGHT", 20, 0)
-
-    local textYBox = CreateEditBox(parent, "Text Y Offset", tostring(db.TextYOffset or 0), function(v)
-        local n = tonumber(v)
-        if n then
-            db.TextYOffset = n
-            ns:Refresh()
-        end
-    end, 80)
-    textYBox:SetPoint("TOPLEFT", textXBox, "TOPRIGHT", 20, 0)
-
-    local textShadow = CreateCheckbox(parent, "Text Shadow", db.TextShadow, function(v)
-        db.TextShadow = v; ns:Refresh()
-    end)
-    textShadow:SetPoint("TOPLEFT", fontSizeBox, "BOTTOMLEFT", -2, -4)
-
-    local previewBtn = CreateButton(parent, "Toggle Preview", 140, 30)
-    previewBtn:SetPoint("TOPLEFT", textShadow, "BOTTOMLEFT", 2, -12)
-    previewBtn:SetScript("OnClick", function()
-        ns:TogglePreview()
-    end)
-
-    return previewBtn
+    card.Relayout = function(w) GridLayout(c, items, 2, w) end
+    card.Relayout()
+    return card
 end
 
-local function BuildProfilesSection(parent, previewBtn)
-    local profileHeader = CreateSectionHeader(parent, "Profiles")
-    profileHeader:SetPoint("TOPLEFT", previewBtn, "BOTTOMLEFT", 0, -20)
+local function BuildTicksCard(parent, bar)
+    local db = bar.db
+    local card = CreateCard(parent, "Tick Marks")
+    local c = card.content
+    local items = {}
+
+    local desc = CreateLabel(c, "Vertical lines at the given stack values.", true)
+    local descWrap = CreateFrame("Frame", nil, c)
+    descWrap:SetHeight(16)
+    desc:SetParent(descWrap)
+    desc:SetPoint("LEFT", 0, 0)
+    items[#items+1] = { frame = descWrap, span = 2 }
+
+    items[#items+1] = { frame = CreateEditBox(c, "Tick Values (e.g. 5, 10, 15)", db.CustomTickValues or "", function(v)
+        db.CustomTickValues = v; bar:Refresh() end), span = 2 }
+    items[#items+1] = { frame = CreateSlider(c, "Tick Thickness", db.TickWidth or 1, 1, 20, 1, function(v)
+        db.TickWidth = v; bar:Refresh() end) }
+    items[#items+1] = { frame = CreateColorSwatch(c, "Tick Color", db.TickColor, function(col)
+        db.TickColor = col; bar:Refresh() end) }
+
+    card.Relayout = function(w) GridLayout(c, items, 2, w) end
+    card.Relayout()
+    return card
+end
+
+-- Thresholds card has dynamic rows; build its own internal layout.
+local function BuildThresholdsCard(parent, bar)
+    local db = bar.db
+    local card = CreateCard(parent, "Color Thresholds")
+    local c = card.content
+
+    local desc = CreateLabel(c, "Bar recolors when stacks cross each threshold.", true)
+    desc:SetPoint("TOPLEFT", 0, 0)
+    desc:SetWidth(c:GetWidth() > 1 and c:GetWidth() or 480)
+    desc:SetJustifyH("LEFT")
+
+    local rowsHolder = CreateFrame("Frame", nil, c)
+    rowsHolder:SetPoint("TOPLEFT", 0, -24)
+    rowsHolder:SetPoint("RIGHT", 0, 0)
+    rowsHolder:SetHeight(1)
+
+    local addBtn
+
+    local function RebuildRows()
+        for _, child in pairs({ rowsHolder:GetChildren() }) do
+            child:Hide(); child:SetParent(nil)
+        end
+
+        local thresholds = db.ColorThresholds or {}
+        table.sort(thresholds, function(a, b) return (a.stacks or 0) < (b.stacks or 0) end)
+
+        local maxStacks = bar:GetMaxStacks()
+
+        local rowY = 0
+        for i, t in ipairs(thresholds) do
+            local idx = i
+            local row = CreateFrame("Frame", nil, rowsHolder)
+            row:SetHeight(28)
+            row:SetPoint("TOPLEFT", 0, rowY)
+            row:SetPoint("RIGHT", 0, 0)
+
+            local stackLabel = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            stackLabel:SetPoint("LEFT", 0, 0)
+            stackLabel:SetText("Stacks =>")
+            stackLabel:SetTextColor(unpack(THEME.label))
+
+            local valFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            valFS:SetPoint("LEFT", stackLabel, "RIGHT", 6, 0)
+            valFS:SetWidth(26)
+            valFS:SetJustifyH("LEFT")
+            valFS:SetTextColor(THEME.headerText[1], THEME.headerText[2], THEME.headerText[3])
+            valFS:SetText(tostring(t.stacks or 1))
+
+            local slider = CreateFrame("Slider", nil, row, "MinimalSliderTemplate")
+            slider:SetPoint("LEFT", valFS, "RIGHT", 6, 0)
+            slider:SetWidth(150)
+            slider:SetHeight(16)
+            slider:SetOrientation("HORIZONTAL")
+            slider:SetMinMaxValues(1, maxStacks)
+            slider:SetValueStep(1)
+            slider:SetObeyStepOnDrag(true)
+            slider:SetValue(math.min(maxStacks, math.max(1, t.stacks or 1)))
+            slider:SetScript("OnValueChanged", function(_, v)
+                v = math.floor(v + 0.5)
+                valFS:SetText(tostring(v))
+                if db.ColorThresholds[idx] then
+                    db.ColorThresholds[idx].stacks = v
+                    bar:Refresh()
+                end
+            end)
+            -- Re-sort + rebuild once the drag finishes, so rows reorder cleanly.
+            slider:SetScript("OnMouseUp", function()
+                table.sort(db.ColorThresholds, function(a, b) return (a.stacks or 0) < (b.stacks or 0) end)
+                RebuildRows()
+            end)
+
+            -- Click the value to type it manually.
+            local stackEdit = CreateFrame("EditBox", nil, row)
+            stackEdit:SetAutoFocus(false)
+            stackEdit:SetNumeric(true)
+            stackEdit:SetFontObject("GameFontHighlightSmall")
+            stackEdit:SetJustifyH("LEFT")
+            stackEdit:SetPoint("LEFT", stackLabel, "RIGHT", 6, 0)
+            stackEdit:SetSize(26, 16)
+            stackEdit:Hide()
+
+            local stackHit = CreateFrame("Button", nil, row)
+            stackHit:SetPoint("LEFT", stackLabel, "RIGHT", 6, 0)
+            stackHit:SetSize(26, 16)
+
+            local function CommitStackEdit()
+                local n = tonumber(stackEdit:GetText())
+                stackEdit:Hide(); valFS:Show(); stackHit:Show()
+                if n then
+                    if n < 1 then n = 1 elseif n > maxStacks then n = maxStacks end
+                    slider:SetValue(n)   -- drives OnValueChanged -> saves + Refresh
+                    table.sort(db.ColorThresholds, function(a, b) return (a.stacks or 0) < (b.stacks or 0) end)
+                    RebuildRows()
+                end
+            end
+            stackEdit:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+            stackEdit:SetScript("OnEscapePressed", function(self)
+                self:Hide(); valFS:Show(); stackHit:Show(); self:ClearFocus()
+            end)
+            stackEdit:SetScript("OnEditFocusLost", CommitStackEdit)
+            stackHit:SetScript("OnClick", function()
+                stackEdit:SetText(tostring(db.ColorThresholds[idx] and db.ColorThresholds[idx].stacks or 1))
+                valFS:Hide(); stackHit:Hide(); stackEdit:Show()
+                stackEdit:SetFocus(); stackEdit:HighlightText()
+            end)
+
+            local colorSwatch = CreateColorSwatch(row, "", t.color or { 1, 1, 1, 1 }, function(col)
+                db.ColorThresholds[idx].color = col
+                bar:Refresh()
+            end)
+            colorSwatch:SetSize(60, 24)
+            colorSwatch:ClearAllPoints()
+            colorSwatch:SetPoint("LEFT", slider, "RIGHT", 14, 0)
+            colorSwatch.swatch:ClearAllPoints()
+            colorSwatch.swatch:SetPoint("LEFT", 0, 0)
+
+            local removeBtn = CreateButton(row, "Remove", 70, 24)
+            removeBtn:SetPoint("LEFT", colorSwatch, "LEFT", 36, 0)
+            removeBtn:SetScript("OnClick", function()
+                table.remove(db.ColorThresholds, idx)
+                RebuildRows()
+                bar:Refresh()
+            end)
+
+            rowY = rowY - 32
+        end
+
+        rowsHolder:SetHeight(math.max(1, math.abs(rowY)))
+
+        if addBtn then
+            addBtn:ClearAllPoints()
+            addBtn:SetPoint("TOPLEFT", rowsHolder, "BOTTOMLEFT", 0, -10)
+        end
+
+        c:SetHeight(24 + math.abs(rowY) + 44)
+        if card.OnHeightChanged then card.OnHeightChanged() end
+    end
+
+    addBtn = CreateButton(c, "+ Add Threshold", 150, 26)
+    addBtn:SetScript("OnClick", function()
+        db.ColorThresholds = db.ColorThresholds or {}
+        local maxStacks = bar:GetMaxStacks()
+        local newStacks = (#db.ColorThresholds > 0)
+            and math.min(maxStacks, (db.ColorThresholds[#db.ColorThresholds].stacks or 0) + 1)
+            or 1
+        table.insert(db.ColorThresholds, { stacks = newStacks, color = { 1, 0.5, 0, 1 } })
+        table.sort(db.ColorThresholds, function(a, b) return (a.stacks or 0) < (b.stacks or 0) end)
+        RebuildRows()
+        bar:Refresh()
+    end)
+
+    card.RebuildRows = RebuildRows
+    card.Relayout = function(w)
+        if not w or w < 1 then w = c:GetWidth() end
+        if not w or w < 1 then w = 480 end
+        desc:SetWidth(w)
+        RebuildRows()
+    end
+    card.Relayout()
+    return card
+end
+
+local function BuildProfilesCard(parent, db)
+    local card = CreateCard(parent, "Profiles")
+    local c = card.content
 
     local profileNames = ns:GetProfileNames()
     local profileOptions = {}
@@ -712,13 +888,20 @@ local function BuildProfilesSection(parent, previewBtn)
         profileOptions[name] = name
     end
 
-    local profileDropdown = CreateDropdown(parent, "Active Profile", profileOptions, ShatterDB.activeProfile, function(name)
+    local dd = CreateDropdown(c, "Active Profile", profileOptions, ShatterDB.activeProfile, function(name)
         ns:SwitchProfile(name)
     end)
-    profileDropdown:SetPoint("TOPLEFT", profileHeader, "BOTTOMLEFT", 0, -8)
+    dd:SetParent(c)
+    dd:ClearAllPoints()
+    dd:SetPoint("TOPLEFT", 0, 0)
+    dd:SetPoint("RIGHT", 0, 0)
 
-    local newBtn = CreateButton(parent, "New", 70, 26)
-    newBtn:SetPoint("TOPLEFT", profileDropdown, "BOTTOMLEFT", 0, -8)
+    local function MakeBtn(text, width)
+        return CreateButton(c, text, width, 26)
+    end
+
+    local newBtn = MakeBtn("New", 70)
+    newBtn:SetPoint("TOPLEFT", dd, "BOTTOMLEFT", 0, -8)
     newBtn:SetScript("OnClick", function()
         StaticPopupDialogs["SHATTER_NEW_PROFILE"] = {
             text = "Enter new profile name:",
@@ -743,7 +926,7 @@ local function BuildProfilesSection(parent, previewBtn)
         StaticPopup_Show("SHATTER_NEW_PROFILE")
     end)
 
-    local deleteBtn = CreateButton(parent, "Delete", 70, 26)
+    local deleteBtn = MakeBtn("Delete", 70)
     deleteBtn:SetPoint("LEFT", newBtn, "RIGHT", 8, 0)
     deleteBtn:SetScript("OnClick", function()
         local current = ShatterDB.activeProfile
@@ -773,7 +956,7 @@ local function BuildProfilesSection(parent, previewBtn)
         StaticPopup_Show("SHATTER_DELETE_PROFILE")
     end)
 
-    local renameBtn = CreateButton(parent, "Rename", 80, 26)
+    local renameBtn = MakeBtn("Rename", 80)
     renameBtn:SetPoint("LEFT", deleteBtn, "RIGHT", 8, 0)
     renameBtn:SetScript("OnClick", function()
         StaticPopupDialogs["SHATTER_RENAME_PROFILE"] = {
@@ -802,61 +985,186 @@ local function BuildProfilesSection(parent, previewBtn)
         StaticPopup_Show("SHATTER_RENAME_PROFILE")
     end)
 
-    local exportBtn = CreateButton(parent, "Export", 70, 26)
+    local exportBtn = MakeBtn("Export", 70)
     exportBtn:SetPoint("LEFT", renameBtn, "RIGHT", 8, 0)
     exportBtn:SetScript("OnClick", function()
         ShowExportPopup(ShatterDB.activeProfile)
     end)
 
-    local importBtn = CreateButton(parent, "Import", 70, 26)
+    local importBtn = MakeBtn("Import", 70)
     importBtn:SetPoint("LEFT", exportBtn, "RIGHT", 8, 0)
     importBtn:SetScript("OnClick", function()
         ShowImportPopup()
     end)
+
+    card.Relayout = function(w)
+        c:SetHeight(THEME.rowH + 16 + 8 + 26)
+    end
+    card.Relayout()
+    return card
 end
 
+-- =====================================================================
+-- Assemble content: header + stacked cards in a scroll frame
+-- =====================================================================
 
--- Main Config Builder
+local CARD_SIDE_MARGIN   = 16
+local CARD_CONTENT_INSET = 14
+local CARD_HEADER_H      = 44
+local CARD_BOTTOM_PAD    = 14
+local CARD_GAP           = 14
 
-local function BuildConfigContent(parent)
-    local db = ns.db
-    local yOff = -10
-
-    yOff = BuildBarSizeSection(parent, db, yOff)
-    yOff = BuildTrackingSection(parent, db, yOff)
-    yOff = BuildColorsSection(parent, db, yOff)
-    yOff = BuildGCDBarSection(parent, db, yOff)
-    local addBtn
-    yOff, addBtn = BuildThresholdsAndTicksSection(parent, db, yOff)
-
-    -- These sections anchor to the previous section's last element rather than yOff
-    local textureDropdown = BuildTexturesAndFontsSection(parent, db, addBtn)
-    local previewBtn = BuildTextSection(parent, db, textureDropdown)
-    BuildProfilesSection(parent, previewBtn)
+local function StackCards(parent, cardList, headerOffset)
+    local y = headerOffset
+    for _, card in ipairs(cardList) do
+        card:ClearAllPoints()
+        card:SetPoint("TOPLEFT", parent, "TOPLEFT", CARD_SIDE_MARGIN, y)
+        card:SetPoint("RIGHT", parent, "RIGHT", -CARD_SIDE_MARGIN, 0)
+        local ch = card.content:GetHeight() or 1
+        local total = ch + CARD_HEADER_H + CARD_BOTTOM_PAD
+        card:SetHeight(total)
+        y = y - total - CARD_GAP
+    end
+    return math.abs(y)
 end
 
+-- Build one bar's settings page into `parent`. The Shatter (main) page also
+-- carries the shared Profiles card (includeProfiles); SalvoBar does not.
+local function BuildConfigContent(parent, bar, includeProfiles)
+    local db = bar and bar.db
+    if not db then return end
 
--- Settings Panel Init
+    -- ---- Header ----
+    local header = CreateFrame("Frame", nil, parent)
+    header:SetPoint("TOPLEFT", 16, -10)
+    header:SetPoint("RIGHT", -16, 0)
+    header:SetHeight(54)
 
-local configScrollFrame = nil
+    local title = header:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+    title:SetPoint("TOPLEFT", 0, 0)
+    title:SetText(bar.cfg.title)
+    title:SetTextColor(unpack(THEME.headerText))
 
-local function InitSettingsPanel()
-    local panel = CreateFrame("Frame", "ShatterSettingsPanel")
+    local subtitle = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 1, -4)
+    subtitle:SetText(bar.cfg.subtitle or "")
+    subtitle:SetTextColor(unpack(THEME.sublabel))
+
+    local previewBtn = CreateButton(header, "Toggle Preview", 130, 26)
+    previewBtn:SetPoint("TOPRIGHT", 0, -2)
+    previewBtn:SetScript("OnClick", function() bar:TogglePreview() end)
+
+    -- Secondary bars get a "Copy from Shatter" button that pulls the main bar's
+    -- visual settings (not ticks / thresholds).
+    if bar.cfg.key ~= "shatter" then
+        local copyBtn = CreateButton(header, "Copy from Shatter", 150, 26)
+        copyBtn:SetPoint("TOPRIGHT", previewBtn, "TOPLEFT", -8, 0)
+        copyBtn:SetScript("OnClick", function()
+            if ns:CopyVisualSettings("shatter", bar.cfg.key) then
+                bar:ApplySettings()
+                ns:Print("Copied visual settings from Shatter.")
+                ns:RebuildConfigPanel()
+            end
+        end)
+    end
+
+    local rule = Tex(header, "ARTWORK")
+    rule:SetColorTexture(THEME.cardBorder[1], THEME.cardBorder[2], THEME.cardBorder[3], 1)
+    rule:SetPoint("BOTTOMLEFT", 0, 0)
+    rule:SetPoint("BOTTOMRIGHT", 0, 0)
+    rule:SetHeight(1)
+
+    -- ---- Cards ----
+    local cards = {
+        BuildLayoutCard(parent, bar),
+        BuildTrackingCard(parent, bar),
+        BuildColorsCard(parent, bar),
+        BuildTextureCard(parent, bar),
+        BuildStackTextCard(parent, bar),
+        BuildTicksCard(parent, bar),
+        BuildThresholdsCard(parent, bar),
+    }
+    if includeProfiles then
+        cards[#cards + 1] = BuildProfilesCard(parent, db)
+    end
+
+    local restacking = false
+    local function Restack()
+        if restacking then return end
+        restacking = true
+
+        local parentW = parent:GetWidth()
+        if not parentW or parentW < 1 then parentW = 480 end
+        local cardW = parentW - CARD_SIDE_MARGIN * 2
+        local contentW = cardW - CARD_CONTENT_INSET * 2
+
+        for _, card in ipairs(cards) do
+            card:SetWidth(cardW)
+            if card.Relayout then card.Relayout(contentW) end
+        end
+        local totalH = StackCards(parent, cards, -74)
+        parent:SetHeight(totalH + 40)
+        restacking = false
+    end
+
+    -- Thresholds card grows/shrinks; restack when it does.
+    for _, card in ipairs(cards) do
+        if card.RebuildRows then card.OnHeightChanged = Restack end
+    end
+
+    Restack()
+    C_Timer.After(0, Restack)
+
+    parent.Restack = Restack
+end
+
+-- =====================================================================
+-- Settings panel init
+-- =====================================================================
+
+-- Create a scrolling canvas panel for one bar and remember it for rebuilds.
+local function CreateBarPanel(panelName, bar, includeProfiles)
+    local panel = CreateFrame("Frame", panelName)
     panel:Hide()
 
-    configScrollFrame = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
-    configScrollFrame:SetPoint("TOPLEFT", 10, -10)
-    configScrollFrame:SetPoint("BOTTOMRIGHT", -30, 10)
+    local scrollFrame = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 4, -4)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -27, 4)
 
-    configContentFrame = CreateFrame("Frame", nil, configScrollFrame)
-    configContentFrame:SetSize(540, 1200)
-    configScrollFrame:SetScrollChild(configContentFrame)
+    local content = CreateFrame("Frame", nil, scrollFrame)
+    content:SetSize(560, 1200)
+    scrollFrame:SetScrollChild(content)
 
-    BuildConfigContent(configContentFrame)
+    scrollFrame:SetScript("OnSizeChanged", function(_, w)
+        if w and w > 1 then
+            content:SetWidth(w)
+            if content.Restack then content.Restack() end
+        end
+    end)
 
-    local category = Settings.RegisterCanvasLayoutCategory(panel, "Shatter")
+    barPanels[#barPanels + 1] = {
+        bar = bar, content = content, includeProfiles = includeProfiles,
+    }
+
+    BuildConfigContent(content, bar, includeProfiles)
+    return panel
+end
+
+local function InitSettingsPanel()
+    local shatterBar = ns.barsByKey["shatter"]
+    local salvoBar   = ns.barsByKey["salvo"]
+
+    -- Main "Shatter" category (carries the Profiles card).
+    local shatterPanel = CreateBarPanel("ShatterSettingsPanel", shatterBar, true)
+    local category = Settings.RegisterCanvasLayoutCategory(shatterPanel, "Shatter")
     settingsCategoryID = category.ID
     Settings.RegisterAddOnCategory(category)
+
+    -- "SalvoBar" as a subcategory of Shatter.
+    if salvoBar then
+        local salvoPanel = CreateBarPanel("SalvoBarSettingsPanel", salvoBar, false)
+        Settings.RegisterCanvasLayoutSubcategory(category, salvoPanel, "SalvoBar")
+    end
 end
 
 function ns:OpenConfig()
@@ -865,14 +1173,17 @@ function ns:OpenConfig()
     end
 end
 
+-- Rebuild every bar's page (e.g. after a profile switch re-points the dbs).
 function ns:RebuildConfigPanel()
-    if not configContentFrame then return end
-    ns.CleanupFrameList({ configContentFrame:GetChildren() })
-    for _, region in pairs({ configContentFrame:GetRegions() }) do
-        region:Hide()
-        region:SetParent(nil)
+    for _, rec in ipairs(barPanels) do
+        local content = rec.content
+        ns.CleanupFrameList({ content:GetChildren() })
+        for _, region in pairs({ content:GetRegions() }) do
+            region:Hide()
+            region:SetParent(nil)
+        end
+        BuildConfigContent(content, rec.bar, rec.includeProfiles)
     end
-    BuildConfigContent(configContentFrame)
 end
 
 local configInitFrame = CreateFrame("Frame")

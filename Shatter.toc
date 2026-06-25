@@ -1,8 +1,8 @@
-## Interface: 120000, 120001
+## Interface: 120007
 ## Title: Shatter
-## Notes: Tracks shatter in a statusbar
-## Author: Citrongroda-TwistingNether
-## Version: 1.0.0
+## Notes: Tracks some mage buffs in a bar
+## Author: Lemondog
+## Version: 1.1.2
 ## SavedVariables: ShatterDB
 ## OptionalDeps: LibSharedMedia-3.0
 ## IconTexture: Interface\Icons\Spell_Frost_Frostbolt
@@ -12,7 +12,6 @@ Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
 Libs\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
 Libs\AceSerializer-3.0\AceSerializer-3.0.lua
 Libs\LibDeflate\LibDeflate.lua
-Libs\LibRangeCheck-3.0\LibRangeCheck-3.0.lua
 
 Core.lua
 Profiles.lua
