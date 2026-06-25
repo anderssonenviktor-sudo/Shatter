@@ -1038,7 +1038,7 @@ local function BuildConfigContent(parent, bar, includeProfiles)
     local header = CreateFrame("Frame", nil, parent)
     header:SetPoint("TOPLEFT", 16, -10)
     header:SetPoint("RIGHT", -16, 0)
-    header:SetHeight(54)
+    header:SetHeight(84)
 
     local title = header:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
     title:SetPoint("TOPLEFT", 0, 0)
@@ -1049,6 +1049,23 @@ local function BuildConfigContent(parent, bar, includeProfiles)
     subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 1, -4)
     subtitle:SetText(bar.cfg.subtitle or "")
     subtitle:SetTextColor(unpack(THEME.sublabel))
+
+    -- Enable/disable toggle for this bar. db.Enabled is the source of truth;
+    -- ApplySettings reads it and calls Enable()/Disable() as needed.
+    local enableCheck = CreateFrame("CheckButton", nil, header, "InterfaceOptionsCheckButtonTemplate")
+    enableCheck:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", -3, -4)
+    enableCheck:SetChecked(db.Enabled ~= false)
+    enableCheck.Text:SetText("Enable")
+    enableCheck.Text:SetFontObject("GameFontHighlightSmall")
+    enableCheck.Text:SetTextColor(unpack(THEME.label))
+    enableCheck:SetScript("OnClick", function(self)
+        local on = self:GetChecked()
+        db.Enabled = on
+        if not on and bar.previewActive then
+            bar:HidePreview()
+        end
+        bar:ApplySettings()
+    end)
 
     local previewBtn = CreateButton(header, "Toggle Preview", 130, 26)
     previewBtn:SetPoint("TOPRIGHT", 0, -2)
@@ -1102,7 +1119,7 @@ local function BuildConfigContent(parent, bar, includeProfiles)
             card:SetWidth(cardW)
             if card.Relayout then card.Relayout(contentW) end
         end
-        local totalH = StackCards(parent, cards, -74)
+        local totalH = StackCards(parent, cards, -104)
         parent:SetHeight(totalH + 40)
         restacking = false
     end
