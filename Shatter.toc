@@ -2,6 +2,7 @@
 ## Title: Shatter
 ## Notes: Tracks some mage buffs in a bar
 ## Author: Lemondog
+## X-Curse-Project-ID: 1510946
 ## Version: 1.1.2
 ## SavedVariables: ShatterDB
 ## OptionalDeps: LibSharedMedia-3.0
