@@ -3,27 +3,32 @@ local addonName, ns = ...
 
 local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
 
--- =====================================================================
--- Theme
--- =====================================================================
+-------- Theme --------
 
 local THEME = {
     cardBg      = { 0.06, 0.06, 0.07, 0.6 },
     cardBorder  = { 0.20, 0.20, 0.22, 1 },
-    headerText  = { 0.92, 0.92, 0.94 },            -- card titles: off-white
+    headerText  = { 0.92, 0.92, 0.94 },
     rowH        = 30,
-    pad         = 14,                              -- card inner padding
+    pad         = 14,
     colGap      = 22,
-    rowGap      = 12,                              -- vertical gap between rows
+    rowGap      = 12,
     label       = { 0.82, 0.83, 0.86 },
     sublabel    = { 0.52, 0.53, 0.58 },
+    btnBg       = { 0.12, 0.12, 0.14, 1 },
+    btnBgHover  = { 0.16, 0.17, 0.20, 1 },
+    btnBgDown   = { 0.09, 0.09, 0.11, 1 },
+    btnBorder   = { 0.28, 0.28, 0.31, 1 },
+    btnBorderHi = { 0.35, 0.55, 0.85, 1 },
+    btnText     = { 0.86, 0.87, 0.90 },
+    btnTextHi   = { 1, 1, 1 },
+    btnTextDis  = { 0.45, 0.45, 0.48 },
 }
 
 local function Tex(parent, layer)
     return parent:CreateTexture(nil, layer or "BACKGROUND")
 end
 
--- A plain bordered card with a header. No color accents.
 local function CreateCard(parent, titleText)
     local card = CreateFrame("Frame", nil, parent, "BackdropTemplate")
     card:SetBackdrop({
@@ -41,14 +46,12 @@ local function CreateCard(parent, titleText)
     title:SetTextColor(THEME.headerText[1], THEME.headerText[2], THEME.headerText[3])
     card.title = title
 
-    -- Thin separator under the header
     local sep = Tex(card, "ARTWORK")
     sep:SetColorTexture(THEME.cardBorder[1], THEME.cardBorder[2], THEME.cardBorder[3], 1)
     sep:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
     sep:SetPoint("RIGHT", card, "RIGHT", -14, 0)
     sep:SetHeight(1)
 
-    -- Content origin: everything inside a card anchors to card.content
     card.content = CreateFrame("Frame", nil, card)
     card.content:SetPoint("TOPLEFT", 14, -44)
     card.content:SetPoint("RIGHT", -14, 0)
@@ -57,9 +60,7 @@ local function CreateCard(parent, titleText)
     return card
 end
 
--- =====================================================================
--- Widget factories (consistent height = THEME.rowH)
--- =====================================================================
+-------- Widget factories --------
 
 local function CreateLabel(parent, text, sub)
     local fs = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -71,9 +72,47 @@ local function CreateLabel(parent, text, sub)
 end
 
 local function CreateButton(parent, text, width, height)
-    local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    local button = CreateFrame("Button", nil, parent, "BackdropTemplate")
     button:SetSize(width or 100, height or 24)
-    button:SetText(text)
+    button:SetBackdrop({
+        bgFile   = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+        insets   = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+
+    local label = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    label:SetPoint("CENTER")
+    label:SetText(text)
+    button:SetFontString(label)
+
+    local function Paint()
+        if not button:IsEnabled() then
+            button:SetBackdropColor(unpack(THEME.btnBg))
+            button:SetBackdropBorderColor(unpack(THEME.btnBorder))
+            label:SetTextColor(unpack(THEME.btnTextDis))
+            return
+        end
+        if button.__down then
+            button:SetBackdropColor(unpack(THEME.btnBgDown))
+        elseif button.__over then
+            button:SetBackdropColor(unpack(THEME.btnBgHover))
+        else
+            button:SetBackdropColor(unpack(THEME.btnBg))
+        end
+        button:SetBackdropBorderColor(unpack(button.__over and THEME.btnBorderHi or THEME.btnBorder))
+        label:SetTextColor(unpack(button.__over and THEME.btnTextHi or THEME.btnText))
+    end
+
+    button:HookScript("OnEnter", function(self) self.__over = true; Paint() end)
+    button:HookScript("OnLeave", function(self) self.__over = false; Paint() end)
+    button:HookScript("OnMouseDown", function(self) self.__down = true; Paint() end)
+    button:HookScript("OnMouseUp", function(self) self.__down = false; Paint() end)
+    button:HookScript("OnEnable", Paint)
+    button:HookScript("OnDisable", Paint)
+    button:HookScript("OnShow", Paint)
+    Paint()
+
     return button
 end
 
@@ -254,10 +293,16 @@ local function CreateDropdown(parent, labelText, options, current, onChange)
     local label = CreateLabel(container, labelText)
     label:SetPoint("TOPLEFT", 0, 0)
 
-    local button = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
-    button:SetHeight(24)
+    local button = CreateButton(container, "", 100, 24)
     button:SetPoint("TOPLEFT", 0, -18)
     button:SetPoint("TOPRIGHT", 0, -18)
+
+    local fs = button:GetFontString()
+    fs:ClearAllPoints()
+    fs:SetPoint("LEFT", 8, 0)
+    fs:SetPoint("RIGHT", -20, 0)
+    fs:SetJustifyH("LEFT")
+    fs:SetWordWrap(false)
 
     local function DisplayFor(key)
         if type(options) == "table" then
@@ -268,31 +313,35 @@ local function CreateDropdown(parent, labelText, options, current, onChange)
         return key or ""
     end
     button:SetText(DisplayFor(current))
-    button:GetFontString():SetPoint("LEFT", 8, 0)
-    button:GetFontString():SetJustifyH("LEFT")
 
-    local arrow = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    local arrow = button:CreateTexture(nil, "OVERLAY")
+    arrow:SetTexture("Interface\\ChatFrame\\ChatFrameExpandArrow")
+    arrow:SetSize(12, 12)
     arrow:SetPoint("RIGHT", -6, 0)
-    arrow:SetText("v")
-    arrow:SetTextColor(unpack(THEME.sublabel))
+    arrow:SetRotation(math.pi)
+
+    local function Generator(_, rootDescription)
+        rootDescription:SetScrollMode(320)
+        local sorted = {}
+        for k, v in pairs(options) do
+            sorted[#sorted + 1] = { key = k, display = v }
+        end
+        table.sort(sorted, function(a, b) return a.display < b.display end)
+        for _, entry in ipairs(sorted) do
+            rootDescription:CreateButton(entry.display, function()
+                button:SetText(entry.display)
+                if onChange then onChange(entry.key) end
+            end)
+        end
+    end
 
     button:SetScript("OnClick", function(self)
-        MenuUtil.CreateContextMenu(self, function(_, rootDescription)
-            rootDescription:SetScrollMode(320)
-            local sorted = {}
-            for k, v in pairs(options) do
-                sorted[#sorted + 1] = { key = k, display = v }
-            end
-            table.sort(sorted, function(a, b) return a.display < b.display end)
-            for _, entry in ipairs(sorted) do
-                rootDescription:CreateButton(entry.display, function()
-                    button:SetText(entry.display)
-                    button:GetFontString():SetPoint("LEFT", 8, 0)
-                    button:GetFontString():SetJustifyH("LEFT")
-                    if onChange then onChange(entry.key) end
-                end)
-            end
-        end)
+        -- Re-anchor the menu below the button (CreateContextMenu opens at cursor).
+        local menu = MenuUtil.CreateContextMenu(self, Generator)
+        if menu then
+            menu:ClearAllPoints()
+            menu:SetPoint("TOPLEFT", self, "BOTTOMLEFT", 0, -2)
+        end
     end)
 
     container.button = button
@@ -325,9 +374,7 @@ local function CreateCheckbox(parent, labelText, checked, onChange, tooltip)
     return container
 end
 
--- =====================================================================
--- Layout helper: flow widgets into a 1 or 2 column grid inside a card.
--- =====================================================================
+-------- Layout helper --------
 
 local function GridLayout(content, items, columns, totalW)
     columns = columns or 2
@@ -379,9 +426,7 @@ local function GridLayout(content, items, columns, totalW)
     return math.abs(y)
 end
 
--- =====================================================================
--- Import / Export popup
--- =====================================================================
+-------- Import / Export popup --------
 
 local settingsCategoryID = nil
 -- One panel record per bar: { bar = <Bar>, content = <Frame>, includeProfiles = bool }.
@@ -524,9 +569,7 @@ local function ShowImportPopup()
     popup:Show()
 end
 
--- =====================================================================
--- Cards
--- =====================================================================
+-------- Cards --------
 
 local function BuildLayoutCard(parent, bar)
     local db = bar.db
@@ -1004,9 +1047,7 @@ local function BuildProfilesCard(parent, db)
     return card
 end
 
--- =====================================================================
--- Assemble content: header + stacked cards in a scroll frame
--- =====================================================================
+-------- Content assembly --------
 
 local CARD_SIDE_MARGIN   = 16
 local CARD_CONTENT_INSET = 14
@@ -1135,9 +1176,7 @@ local function BuildConfigContent(parent, bar, includeProfiles)
     parent.Restack = Restack
 end
 
--- =====================================================================
--- Settings panel init
--- =====================================================================
+-------- Settings panel init --------
 
 -- Create a scrolling canvas panel for one bar and remember it for rebuilds.
 local function CreateBarPanel(panelName, bar, includeProfiles)

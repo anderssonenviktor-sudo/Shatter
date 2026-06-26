@@ -59,9 +59,6 @@ local function SnapFrameToPixels(frame)
     end
 end
 
--- `value` is the plain `applications` stack count. Call SetValue UNPROTECTED
--- (a number). Each segment has a 0.5-wide range so it renders binary: full
--- when value >= i, empty otherwise.
 local function SetAllBarsValue(granularBars, thresholdLayers, value)
     for _, bar in ipairs(granularBars) do bar:SetValue(value) end
     if thresholdLayers then
@@ -72,28 +69,21 @@ local function SetAllBarsValue(granularBars, thresholdLayers, value)
 end
 
 
--- Aura Detection
+-------- Aura detection --------
 
-
--- 12.0: an auraInstanceID may be a Secret Value. Comparing it (id ~= 0)
--- taints. Presence is a plain nil-check only, matching ArcUI's IsAuraActive.
+-- 12.0: an auraInstanceID may be a Secret Value, so comparing it taints.
+-- Presence is a plain nil-check only.
 local function HasAuraInstanceID(id)
     return id ~= nil
 end
 
--- Stack count, read EXACTLY as ArcUI does (ArcUI_Core.lua durationStacksRef):
---   auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, id)
---   return auraData.applications
--- For this aura `applications` is a plain readable number (cf. ArcUI_Resources
--- "NON-SECRET: applications ... safe to compare"). It feeds SetValue directly.
--- NOTE: GetAuraApplicationDisplayCount returns a secret *string* for display
--- only and cannot drive a StatusBar (SetValue rejects it) — do not use it here.
+-- `applications` is a plain readable number and feeds SetValue directly.
+-- (GetAuraApplicationDisplayCount returns a secret string and cannot drive a StatusBar.)
 local function ReadDisplayCount(cdmFrame, fallbackUnit)
     if not cdmFrame then return nil end
     local auraInstanceID = cdmFrame.auraInstanceID
     if not HasAuraInstanceID(auraInstanceID) then return nil end
-    -- The CDM frame knows its own unit; fall back to the bar's TrackUnit
-    -- (e.g. "player" for self-buffs like Salvo) rather than always "target".
+    -- Fall back to the bar's TrackUnit ("player" for self-buffs) over "target".
     local unit = cdmFrame.auraDataUnit or fallbackUnit or "target"
     local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, auraInstanceID)
     if auraData then
@@ -103,13 +93,9 @@ local function ReadDisplayCount(cdmFrame, fallbackUnit)
 end
 
 
--- =====================================================================
--- Bar prototype
--- =====================================================================
--- Each tracked aura (Shatter / SalvoBar) is one Bar instance. All bar state
--- and rendering lives on the instance; spec/spell-specific data lives in
--- self.cfg. A single shared eventFrame fans runtime events out to every
--- enabled bar (see Event Dispatch below).
+-------- Bar prototype --------
+-- Each tracked aura is one Bar instance. Spec/spell-specific data lives in
+-- self.cfg. A shared eventFrame fans runtime events out to every enabled bar.
 
 local Bar = {}
 Bar.__index = Bar
@@ -260,7 +246,7 @@ function Bar:TryReadFromCDMFrame(cdmFrame)
     local auraInstanceID, count = ReadDisplayCount(cdmFrame, self.db and self.db.TrackUnit)
     if not auraInstanceID then return false end
     self.trackedInstanceID = auraInstanceID
-    self.currentStacks = count   -- plain applications count; drives SetValue
+    self.currentStacks = count
     return true
 end
 
@@ -290,7 +276,7 @@ function Bar:OnCDMFrameUpdate(frame)
     local auraInstanceID, count = ReadDisplayCount(frame, self.db and self.db.TrackUnit)
     if auraInstanceID then
         self.trackedInstanceID = auraInstanceID
-        self.currentStacks = count   -- plain applications count
+        self.currentStacks = count
     else
         self:ClearTrackedState()
     end
@@ -308,10 +294,9 @@ function Bar:HookCDMFrame(frame)
     if not frame or self.hookedCDMFrames[frame] then return end
     self.hookedCDMFrames[frame] = true
 
-    -- 12.0 (ArcUI_AuraFrames.lua): drive updates entirely off the CDM frame.
+    -- Drive updates off the CDM frame:
     --   OnAuraInstanceInfoSet/Cleared → aura gained / lost
-    --   OnUnitAuraUpdatedEvent        → stacks change on the SAME instance
-    --                                    (the case missed by gain/loss alone)
+    --   OnUnitAuraUpdatedEvent        → stacks change on the same instance
     --   OnNewTarget                   → target swap (target-unit debuffs)
     if frame.OnAuraInstanceInfoSet then
         hooksecurefunc(frame, "OnAuraInstanceInfoSet", function(f) self:OnCDMFrameUpdate(f) end)
@@ -397,7 +382,6 @@ function Bar:UpdateBar()
 
     SetAllBarsValue(self.granularBars, self.thresholdLayers, self.currentStacks)
     if db.ShowStackCount then
-        -- Unprotected, like ArcUI (_arcSingleStackText:SetText(count)).
         self.stackText:SetText(self.currentStacks)
     end
 
@@ -518,10 +502,9 @@ function Bar:CreateBarLayers()
         local bar = CreateFrame("StatusBar", nil, self.innerContainer)
         bar:SetStatusBarTexture(texPath)
         bar:SetFrameLevel(baseLevel + i)
-        -- 0.5-wide range (ArcUI CreateChargeSlot pattern) makes each segment a
-        -- binary fill: SetValue(secretStacks) renders full when stacks >= i,
-        -- empty otherwise. A 1.0-wide (i-1, i) range asks the engine to PARTIAL
-        -- fill from a Secret Value, which silently fails -> bar never fills.
+        -- 0.5-wide range makes each segment a binary fill: full when stacks >= i,
+        -- empty otherwise. A 1.0-wide range asks for a partial fill, which silently
+        -- fails on a Secret Value so the bar never fills.
         bar:SetMinMaxValues(i - 0.5, i)
         bar:SetValue(0)
         bar:SetStatusBarColor(ns.UnpackColor(barColor))
@@ -552,9 +535,8 @@ function Bar:CreateBarLayers()
                 barTex:SetTexelSnappingBias(0)
             end
 
-            -- Binary 0.5-wide segments (see CreateBarLayers note above). A
-            -- threshold layer's segment i only renders once the count has
-            -- reached this threshold, so gate it at max(i, thresholdStacks).
+            -- Segment i only renders once the count reaches this threshold,
+            -- so gate it at max(i, thresholdStacks).
             local fillAt = (i <= thresholdStacks) and thresholdStacks or i
             bar:SetMinMaxValues(fillAt - 0.5, fillAt)
 
@@ -926,9 +908,7 @@ function Bar:TogglePreview()
 end
 
 
--- =====================================================================
--- Bar registry + shared event dispatch
--- =====================================================================
+-------- Bar registry + shared event dispatch --------
 
 ns.bars = ns.bars or {}
 ns.barsByKey = ns.barsByKey or {}
@@ -1028,9 +1008,7 @@ function ns:PLAYER_SPECIALIZATION_CHANGED()
 end
 
 
--- =====================================================================
--- Bar registration
--- =====================================================================
+-------- Bar registration --------
 
 ns:RegisterBar({
     key       = "shatter",
